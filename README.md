@@ -23,7 +23,7 @@
 ### 1. Клонирование и подготовка окружения
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/merch_analyzer.git
+git clone https://github.com/constantintesla/merch_analyzer.git
 cd merch_analyzer
 ```
 
