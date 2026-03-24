@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Merch Analyzer (SKU110K MVP)</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 24px; max-width: 1100px; }
+        .grid { display: grid; grid-template-columns: 380px 1fr; gap: 24px; align-items: start; }
+        .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
+        input, button { width: 100%; margin-top: 8px; padding: 8px; box-sizing: border-box; }
+        button { cursor: pointer; font-weight: 600; }
+        .error { color: #b00020; white-space: pre-wrap; }
+        .metrics { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 8px; margin-bottom: 12px; }
+        .metric { background: #f5f5f5; border-radius: 6px; padding: 10px; }
+        img { max-width: 100%; border: 1px solid #ddd; border-radius: 8px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+        th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+        th { background: #f8f8f8; }
+        .sim-groups { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; margin-top: 8px; }
+        .sim-group { border: 1px solid #e5e5e5; border-radius: 8px; padding: 10px; }
+        .sim-group.active { border-color: #4c6fff; box-shadow: 0 0 0 2px rgba(76,111,255,0.15); }
+        .sim-preview { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .sim-preview img { width: 72px; height: 72px; object-fit: cover; border: 1px solid #ddd; border-radius: 6px; }
+        .items-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin-top: 8px; }
+        .item-card { border: 1px solid #e5e5e5; border-radius: 8px; padding: 8px; }
+        .item-card.hidden { display: none; }
+        .item-card.active { border-color: #4c6fff; box-shadow: 0 0 0 2px rgba(76,111,255,0.15); }
+        .item-card img { width: 100%; height: 100px; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #eef3ff; color: #1f3b8a; font-size: 12px; margin-top: 6px; }
+        .toolbar { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+        .toolbar select, .toolbar button { width: auto; min-width: 140px; margin-top: 0; }
+        .small-text { color: #666; font-size: 13px; }
+        .result-image-wrap { position: relative; display: inline-block; width: 100%; max-width: 100%; margin-top: 8px; }
+        .result-image-wrap img { width: 100%; height: auto; display: block; }
+        .overlay-layer { position: absolute; inset: 0; pointer-events: none; }
+        .overlay-box {
+            position: absolute;
+            border: 1px solid hsla(var(--hue), 95%, 40%, 0.75);
+            background: hsla(var(--hue), 90%, 52%, 0.20);
+            box-sizing: border-box;
+            border-radius: 3px;
+            opacity: 0.25;
+            transition: opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+            pointer-events: auto;
+            cursor: pointer;
+        }
+        .result-image-wrap.has-focus .overlay-box { opacity: 0.06; }
+        .overlay-box.group-match { opacity: 0.58; }
+        .overlay-box.item-match {
+            opacity: 0.95;
+            box-shadow: 0 0 0 2px hsla(var(--hue), 100%, 45%, 0.55), 0 0 18px hsla(var(--hue), 100%, 45%, 0.25);
+            transform: translateZ(0);
+        }
+        .overlay-tooltip {
+            position: absolute;
+            display: none;
+            pointer-events: none;
+            z-index: 5;
+            background: rgba(15, 20, 32, 0.92);
+            color: #fff;
+            border-radius: 8px;
+            padding: 6px 8px;
+            font-size: 12px;
+            line-height: 1.3;
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>Merch Analyzer (SKU110K)</h1>
+    <p>Загрузи фото полки, получи детекцию и базовую аналитику наполненности.</p>
+
+    <div class="grid">
+        <div class="card">
+            <form action="/analyze" method="post" enctype="multipart/form-data">
+                <label>Фото полки</label>
+                <input type="file" name="image" accept="image/*" required />
+                <button type="submit">Запустить анализ</button>
+            </form>
+            {% if error %}
+                <p class="error">{{ error }}</p>
+            {% endif %}
+        </div>
+
+        <div class="card">
+            {% if metrics %}
+                <div class="metrics">
+                    <div class="metric"><b>Позиции</b><br>{{ metrics.item_count }}</div>
+                    <div class="metric"><b>Заполненность</b><br>{{ '%.1f' % (metrics.occupancy_ratio * 100) }}%</div>
+                    <div class="metric"><b>Пустота</b><br>{{ '%.1f' % (metrics.empty_ratio * 100) }}%</div>
+                    <div class="metric"><b>Плотность выкладки</b><br>{{ '%.2f' % metrics.density_score }}</div>
+                </div>
+
+                <h3>По рядам</h3>
+                <table>
+                    <thead>
+                        <tr><th>Ряд</th><th>Позиции</th><th>Заполненность</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for row in metrics.rows %}
+                            <tr>
+                                <td>{{ row.row }}</td>
+                                <td>{{ row["items"] }}</td>
+                                <td>{{ '%.1f' % (row.occupancy * 100) }}%</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+
+                {% if similar_groups and similar_groups.group_count > 0 %}
+                    <h3>Похожие позиции (кластеризация)</h3>
+                    <p>Найдено групп: <b>{{ similar_groups.group_count }}</b></p>
+                    <div class="sim-groups" id="sim-groups">
+                        {% for group in similar_groups.groups %}
+                            <div class="sim-group" data-group-id="{{ group.id }}">
+                                <div><b>Группа {{ group.id }}</b></div>
+                                <div>Похожих товаров: {{ group.count }}</div>
+                                <div>Ряд: {{ group.row }}</div>
+                                <div>Средний score: {{ '%.2f' % group.avg_score }}</div>
+                                <div class="sim-preview">
+                                    {% for crop_b64 in group.preview_images %}
+                                        <img src="data:image/jpeg;base64,{{ crop_b64 }}" alt="similar item" />
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+
+                {% if similar_groups and similar_groups["items"] %}
+                    <h3>Все товары с группами</h3>
+                    <div class="toolbar">
+                        <select id="group-filter">
+                            <option value="all">Все группы</option>
+                            {% for group in similar_groups.groups %}
+                                <option value="{{ group.id }}">Группа {{ group.id }}</option>
+                            {% endfor %}
+                        </select>
+                        <select id="sort-mode">
+                            <option value="id">Сортировка: по номеру</option>
+                            <option value="group">Сортировка: по группе</option>
+                            <option value="score">Сортировка: по score</option>
+                        </select>
+                        <button type="button" id="reset-filters">Сбросить</button>
+                    </div>
+                    <div class="small-text" id="items-count"></div>
+                    <div class="items-grid">
+                        {% for item in similar_groups["items"] %}
+                            <div class="item-card"
+                                 data-item-id="{{ item.item_id }}"
+                                 data-group-id="{{ item.group_id }}"
+                                 data-score="{{ '%.5f' % item.score }}"
+                                 data-x1="{{ '%.3f' % item.bbox.x1 }}"
+                                 data-y1="{{ '%.3f' % item.bbox.y1 }}"
+                                 data-x2="{{ '%.3f' % item.bbox.x2 }}"
+                                 data-y2="{{ '%.3f' % item.bbox.y2 }}">
+                                <img src="data:image/jpeg;base64,{{ item.crop_image }}" alt="item {{ item.item_id }}" />
+                                <div><b>Товар #{{ item.item_id }}</b></div>
+                                <div class="badge">Группа {{ item.group_id }}</div>
+                                <div>Ряд: {{ item.row }}</div>
+                                <div>score: {{ '%.2f' % item.score }}</div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+
+                <h3>Разметка</h3>
+                <div class="result-image-wrap" id="result-image-wrap">
+                    <img src="data:image/jpeg;base64,{{ result_image_b64 }}" alt="Detection result" id="result-image" />
+                    <div class="overlay-layer" id="overlay-layer"></div>
+                    <div class="overlay-tooltip" id="overlay-tooltip"></div>
+                </div>
+            {% else %}
+                <p>Результаты появятся после загрузки изображения.</p>
+            {% endif %}
+        </div>
+    </div>
+    <script>
+        (function () {
+            const grid = document.querySelector(".items-grid");
+            if (!grid) return;
+
+            const cards = Array.from(grid.querySelectorAll(".item-card"));
+            const groups = Array.from(document.querySelectorAll(".sim-group"));
+            const groupFilter = document.getElementById("group-filter");
+            const sortMode = document.getElementById("sort-mode");
+            const resetBtn = document.getElementById("reset-filters");
+            const countEl = document.getElementById("items-count");
+            const resultImage = document.getElementById("result-image");
+            const imageWrap = document.getElementById("result-image-wrap");
+            const overlayLayer = document.getElementById("overlay-layer");
+            const overlayTooltip = document.getElementById("overlay-tooltip");
+            let pinnedGroup = "all";
+            let overlayBoxes = [];
+
+            function groupHue(groupId) {
+                const gid = Number(groupId) || 0;
+                return (gid * 47) % 360;
+            }
+
+            function setActiveGroup(groupId, itemId) {
+                const hasGroup = groupId && groupId !== "all";
+                groups.forEach((g) => g.classList.toggle("active", hasGroup && g.dataset.groupId === groupId));
+                cards.forEach((c) => {
+                    c.classList.toggle("active", hasGroup && c.dataset.groupId === groupId);
+                });
+
+                if (overlayBoxes.length) {
+                    imageWrap.classList.toggle("has-focus", hasGroup);
+                    overlayBoxes.forEach((box) => {
+                        const isGroup = hasGroup && box.dataset.groupId === groupId;
+                        const isItem = hasGroup && itemId && box.dataset.itemId === itemId;
+                        box.classList.toggle("group-match", isGroup);
+                        box.classList.toggle("item-match", isItem);
+                    });
+                }
+            }
+
+            function showTooltip(box) {
+                if (!overlayTooltip) return;
+                overlayTooltip.style.display = "block";
+                overlayTooltip.innerHTML =
+                    "Товар #" + box.dataset.itemId +
+                    "<br>Группа " + box.dataset.groupId +
+                    "<br>score: " + Number(box.dataset.score).toFixed(2);
+                const rect = box.getBoundingClientRect();
+                const wrapRect = imageWrap.getBoundingClientRect();
+                const left = rect.left - wrapRect.left + rect.width / 2;
+                const top = rect.top - wrapRect.top - 8;
+                overlayTooltip.style.left = Math.max(0, left - 40) + "px";
+                overlayTooltip.style.top = Math.max(0, top - 40) + "px";
+            }
+
+            function hideTooltip() {
+                if (overlayTooltip) overlayTooltip.style.display = "none";
+            }
+
+            function renderOverlay() {
+                if (!resultImage || !overlayLayer) return;
+                overlayLayer.innerHTML = "";
+                const nW = resultImage.naturalWidth;
+                const nH = resultImage.naturalHeight;
+                const cW = resultImage.clientWidth;
+                const cH = resultImage.clientHeight;
+                if (!nW || !nH || !cW || !cH) return;
+
+                const sx = cW / nW;
+                const sy = cH / nH;
+
+                overlayBoxes = cards.map((card) => {
+                    const x1 = Number(card.dataset.x1) * sx;
+                    const y1 = Number(card.dataset.y1) * sy;
+                    const x2 = Number(card.dataset.x2) * sx;
+                    const y2 = Number(card.dataset.y2) * sy;
+                    const box = document.createElement("div");
+                    box.className = "overlay-box";
+                    box.dataset.groupId = card.dataset.groupId;
+                    box.dataset.itemId = card.dataset.itemId;
+                    box.dataset.score = card.dataset.score;
+                    box.style.setProperty("--hue", String(groupHue(card.dataset.groupId)));
+                    box.style.left = x1 + "px";
+                    box.style.top = y1 + "px";
+                    box.style.width = Math.max(2, x2 - x1) + "px";
+                    box.style.height = Math.max(2, y2 - y1) + "px";
+                    box.addEventListener("mouseenter", () => {
+                        setActiveGroup(box.dataset.groupId, box.dataset.itemId);
+                        showTooltip(box);
+                    });
+                    box.addEventListener("mouseleave", () => {
+                        hideTooltip();
+                        setActiveGroup(pinnedGroup);
+                    });
+                    overlayLayer.appendChild(box);
+                    return box;
+                });
+
+                setActiveGroup(pinnedGroup);
+            }
+
+            function applyFilterAndSort() {
+                const selectedGroup = groupFilter.value;
+                const mode = sortMode.value;
+                let visible = 0;
+
+                cards.forEach((card) => {
+                    const match = selectedGroup === "all" || card.dataset.groupId === selectedGroup;
+                    card.classList.toggle("hidden", !match);
+                    if (match) visible += 1;
+                });
+
+                const sorted = [...cards].sort((a, b) => {
+                    if (mode === "score") return Number(b.dataset.score) - Number(a.dataset.score);
+                    if (mode === "group") {
+                        const g = Number(a.dataset.groupId) - Number(b.dataset.groupId);
+                        if (g !== 0) return g;
+                        return Number(a.dataset.itemId) - Number(b.dataset.itemId);
+                    }
+                    return Number(a.dataset.itemId) - Number(b.dataset.itemId);
+                });
+                sorted.forEach((card) => grid.appendChild(card));
+
+                countEl.textContent = "Показано товаров: " + visible + " / " + cards.length;
+                pinnedGroup = selectedGroup;
+                setActiveGroup(pinnedGroup);
+            }
+
+            groups.forEach((groupCard) => {
+                groupCard.style.cursor = "pointer";
+                groupCard.addEventListener("click", () => {
+                    const groupId = groupCard.dataset.groupId;
+                    groupFilter.value = groupId;
+                    applyFilterAndSort();
+                });
+            });
+
+            groupFilter.addEventListener("change", applyFilterAndSort);
+            sortMode.addEventListener("change", applyFilterAndSort);
+            resetBtn.addEventListener("click", () => {
+                groupFilter.value = "all";
+                sortMode.value = "id";
+                applyFilterAndSort();
+            });
+            cards.forEach((card) => {
+                card.addEventListener("mouseenter", () => setActiveGroup(card.dataset.groupId, card.dataset.itemId));
+                card.addEventListener("mouseleave", () => setActiveGroup(pinnedGroup));
+            });
+            window.addEventListener("resize", renderOverlay);
+            if (resultImage) {
+                if (resultImage.complete) renderOverlay();
+                resultImage.addEventListener("load", renderOverlay);
+            }
+
+            applyFilterAndSort();
+        })();
+    </script>
+</body>
+</html>

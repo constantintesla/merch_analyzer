@@ -1,0 +1,31 @@
+# Python
+.venv/
+.venv_sku/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project
+tmp/
+third_party/tmp/
+third_party/SKU110K_CVPR19/
+models/*.h5
+*.log
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
