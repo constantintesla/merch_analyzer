@@ -7,7 +7,12 @@ from typing import Iterable
 import numpy as np
 from PIL import Image
 
-from app.analytics import Detection
+from app.analytics import (
+    Detection,
+    assign_shelves_and_positions,
+    assign_shelves_from_grid_bands,
+    assign_shelves_from_horizontal_bands,
+)
 
 
 def _crop_to_base64(crop: Image.Image) -> str:
@@ -101,6 +106,10 @@ def analyze_similar_positions(
     max_previews_per_group: int = 8,
     area_ratio_limit: float = 1.7,
     aspect_ratio_limit: float = 1.35,
+    *,
+    fact_band_shelf_ids: list[int] | None = None,
+    fact_band_y_splits: list[float] | None = None,
+    fact_band_x_splits: list[float] | None = None,
 ) -> dict:
     dets = list(detections)
     if not dets:
@@ -109,10 +118,35 @@ def analyze_similar_positions(
     crops: list[Image.Image] = []
     valid_dets: list[Detection] = []
     rows: list[int] = []
+    shelf_ids: list[int] = []
+    positions_in_shelf: list[int] = []
     areas: list[float] = []
     aspects: list[float] = []
-    row_height = image.height / max(1, shelf_rows)
-    for d in dets:
+    if fact_band_shelf_ids is not None and fact_band_y_splits is not None:
+        if fact_band_x_splits is not None:
+            assignments = assign_shelves_from_grid_bands(
+                dets,
+                image.width,
+                image.height,
+                fact_band_shelf_ids,
+                fact_band_y_splits,
+                fact_band_x_splits,
+            )
+        else:
+            assignments = assign_shelves_from_horizontal_bands(
+                dets,
+                image.width,
+                image.height,
+                fact_band_shelf_ids,
+                fact_band_y_splits,
+            )
+    else:
+        assignments = assign_shelves_and_positions(dets, image.width, image.height)
+    placement_by_index = {
+        int(a["detection_index"]): (int(a["shelf_id"]), int(a["position_in_shelf"]))
+        for a in assignments
+    }
+    for det_index, d in enumerate(dets):
         x1 = int(max(0, min(d.x1, image.width - 1)))
         y1 = int(max(0, min(d.y1, image.height - 1)))
         x2 = int(max(0, min(d.x2, image.width)))
@@ -121,10 +155,10 @@ def analyze_similar_positions(
             continue
         crops.append(image.crop((x1, y1, x2, y2)))
         valid_dets.append(d)
-        cy = ((d.y1 + d.y2) / 2.0)
-        row = int(cy / max(1e-6, row_height)) + 1
-        row = max(1, min(shelf_rows, row))
-        rows.append(row)
+        shelf_id, position_in_shelf = placement_by_index.get(det_index, (0, 0))
+        rows.append(shelf_id)
+        shelf_ids.append(shelf_id)
+        positions_in_shelf.append(position_in_shelf)
         w = max(1.0, d.x2 - d.x1)
         h = max(1.0, d.y2 - d.y1)
         areas.append(float(w * h))
@@ -139,7 +173,8 @@ def analyze_similar_positions(
 
     # Кластеризуем по каждому ряду отдельно, чтобы не мешать разные полки.
     groups: list[list[int]] = []
-    for row_id in range(1, shelf_rows + 1):
+    distinct_shelves = sorted(set(shelf_ids))
+    for row_id in distinct_shelves:
         row_item_indices = [i for i, r in enumerate(rows) if r == row_id]
         if not row_item_indices:
             continue
@@ -192,6 +227,8 @@ def analyze_similar_positions(
                     "y2": float(det.y2),
                 },
                 "row": rows[item_idx],
+                "shelf_id": shelf_ids[item_idx],
+                "position_in_shelf": positions_in_shelf[item_idx],
             }
         )
 
@@ -200,3 +237,33 @@ def analyze_similar_positions(
         "groups": result_groups,
         "items": result_items,
     }
+
+
+def cluster_crop_indices_by_similarity(
+    crops: list[Image.Image],
+    similarity_threshold: float,
+    *,
+    area_ratio_limit: float = 1.7,
+    aspect_ratio_limit: float = 1.35,
+) -> list[list[int]]:
+    """
+    Разбивает индексы кропов 0..n-1 на кластеры по визуальной похожести (как в analyze_similar_positions).
+    Каждый индекс попадает ровно в один кластер.
+    """
+    n = len(crops)
+    if n == 0:
+        return []
+    if n == 1:
+        return [[0]]
+    features = np.vstack([_feature_from_crop(c) for c in crops])
+    areas = np.asarray([float(c.width * c.height) for c in crops], dtype=np.float32)
+    aspects = np.asarray([float(c.width) / max(float(c.height), 1.0) for c in crops], dtype=np.float32)
+    return _cluster_row_centroid(
+        item_indices=list(range(n)),
+        features=features,
+        areas=areas,
+        aspects=aspects,
+        similarity_threshold=similarity_threshold,
+        area_ratio_limit=area_ratio_limit,
+        aspect_ratio_limit=aspect_ratio_limit,
+    )

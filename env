@@ -1,0 +1,18 @@
+SKU110K_REPO_PATH=third_party/SKU110K_CVPR19
+SKU110K_WEIGHTS_PATH=models/sku110k_pretrained.h5
+SKU110K_PYTHON_BIN=.venv_sku/Scripts/python.exe
+SKU110K_RUN_MODE=docker
+SKU110K_WSL_PYTHON_BIN=python3
+SKU110K_DOCKER_IMAGE=merch-analyzer-sku110k:tf1.15
+SKU110K_DOCKER_MOUNT_HOST=.
+SKU110K_DOCKER_MOUNT_TARGET=/workspace
+SKU110K_DOCKER_USE_GPU=true
+SKU110K_SCORE_THRESHOLD=0.6
+
+# Используется только в старой логике; в новой логике полки определяются автоматически.
+SHELF_ROWS=4
+SIMILARITY_THRESHOLD=0.88
+
+LMSTUDIO_URL=http://desktop-oh7jn1i:1234
+LMSTUDIO_MODEL=qwen/qwen3.5-35b-a3b
+LM_SHARED_CLASSIFY_PER_SIMILARITY_GROUP=false

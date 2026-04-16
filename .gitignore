@@ -18,6 +18,7 @@ build/
 *.swo
 
 # Project
+data/
 tmp/
 third_party/tmp/
 third_party/SKU110K_CVPR19/

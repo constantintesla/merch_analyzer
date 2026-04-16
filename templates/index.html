@@ -1,338 +1,686 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Merch Analyzer (SKU110K MVP)</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 24px; max-width: 1100px; }
-        .grid { display: grid; grid-template-columns: 380px 1fr; gap: 24px; align-items: start; }
-        .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
-        input, button { width: 100%; margin-top: 8px; padding: 8px; box-sizing: border-box; }
-        button { cursor: pointer; font-weight: 600; }
-        .error { color: #b00020; white-space: pre-wrap; }
-        .metrics { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 8px; margin-bottom: 12px; }
-        .metric { background: #f5f5f5; border-radius: 6px; padding: 10px; }
-        img { max-width: 100%; border: 1px solid #ddd; border-radius: 8px; }
-        table { border-collapse: collapse; width: 100%; margin-top: 8px; }
-        th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
-        th { background: #f8f8f8; }
-        .sim-groups { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; margin-top: 8px; }
-        .sim-group { border: 1px solid #e5e5e5; border-radius: 8px; padding: 10px; }
-        .sim-group.active { border-color: #4c6fff; box-shadow: 0 0 0 2px rgba(76,111,255,0.15); }
-        .sim-preview { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-        .sim-preview img { width: 72px; height: 72px; object-fit: cover; border: 1px solid #ddd; border-radius: 6px; }
-        .items-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin-top: 8px; }
-        .item-card { border: 1px solid #e5e5e5; border-radius: 8px; padding: 8px; }
-        .item-card.hidden { display: none; }
-        .item-card.active { border-color: #4c6fff; box-shadow: 0 0 0 2px rgba(76,111,255,0.15); }
-        .item-card img { width: 100%; height: 100px; object-fit: cover; border-radius: 6px; border: 1px solid #ddd; }
-        .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #eef3ff; color: #1f3b8a; font-size: 12px; margin-top: 6px; }
-        .toolbar { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
-        .toolbar select, .toolbar button { width: auto; min-width: 140px; margin-top: 0; }
-        .small-text { color: #666; font-size: 13px; }
-        .result-image-wrap { position: relative; display: inline-block; width: 100%; max-width: 100%; margin-top: 8px; }
-        .result-image-wrap img { width: 100%; height: auto; display: block; }
-        .overlay-layer { position: absolute; inset: 0; pointer-events: none; }
-        .overlay-box {
-            position: absolute;
-            border: 1px solid hsla(var(--hue), 95%, 40%, 0.75);
-            background: hsla(var(--hue), 90%, 52%, 0.20);
-            box-sizing: border-box;
-            border-radius: 3px;
-            opacity: 0.25;
-            transition: opacity 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
-            pointer-events: auto;
-            cursor: pointer;
-        }
-        .result-image-wrap.has-focus .overlay-box { opacity: 0.06; }
-        .overlay-box.group-match { opacity: 0.58; }
-        .overlay-box.item-match {
-            opacity: 0.95;
-            box-shadow: 0 0 0 2px hsla(var(--hue), 100%, 45%, 0.55), 0 0 18px hsla(var(--hue), 100%, 45%, 0.25);
-            transform: translateZ(0);
-        }
-        .overlay-tooltip {
-            position: absolute;
-            display: none;
-            pointer-events: none;
-            z-index: 5;
-            background: rgba(15, 20, 32, 0.92);
-            color: #fff;
-            border-radius: 8px;
-            padding: 6px 8px;
-            font-size: 12px;
-            line-height: 1.3;
-            white-space: nowrap;
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Merch Analyzer</title>
+  <style>
+    :root {
+      --bg-main: #f4f7ff;
+      --bg-accent: #ecf2ff;
+      --card-bg: rgba(255, 255, 255, 0.92);
+      --text-main: #1f2a44;
+      --text-muted: #64748b;
+      --border-soft: #dbe3f4;
+      --border-strong: #c5d3f2;
+      --primary: #356dff;
+      --primary-hover: #245aeb;
+      --shadow-soft: 0 10px 30px rgba(39, 68, 130, 0.08);
+      --shadow-strong: 0 14px 34px rgba(39, 68, 130, 0.16);
+    }
+
+    html, body { width: 100%; height: 100%; margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", Arial, sans-serif;
+      background:
+        radial-gradient(circle at 12% 8%, #ffffff 0, #f7f9ff 32%, transparent 58%),
+        radial-gradient(circle at 88% 14%, #e8f0ff 0, transparent 42%),
+        linear-gradient(135deg, var(--bg-main), var(--bg-accent));
+      color: var(--text-main);
+    }
+    * { box-sizing: border-box; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 16px;
+      height: 100vh;
+      padding: 16px;
+    }
+    .left-col, .right-col { min-height: 0; overflow: auto; }
+    .card {
+      border: 1px solid var(--border-soft);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 14px;
+      background: var(--card-bg);
+      backdrop-filter: blur(3px);
+      box-shadow: var(--shadow-soft);
+      transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    .card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-strong);
+    }
+    .row { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    label { display: block; font-size: 13px; margin-bottom: 4px; color: #415172; font-weight: 600; }
+    input, button, select {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border-soft);
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+    }
+    input, select {
+      background: #fff;
+      color: var(--text-main);
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(53, 109, 255, 0.2);
+    }
+    button {
+      cursor: pointer;
+      border: none;
+      color: #fff;
+      font-weight: 600;
+      letter-spacing: 0.1px;
+      background: linear-gradient(135deg, var(--primary), #5a86ff);
+      box-shadow: 0 8px 18px rgba(53, 109, 255, 0.28);
+    }
+    button:hover { background: linear-gradient(135deg, var(--primary-hover), #4f7af0); }
+    button:active { transform: translateY(1px); }
+    .hint { color: var(--text-muted); font-size: 12px; margin-top: 0; }
+    .preview-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .preview-zoom-wrap {
+      overflow: hidden;
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      background: linear-gradient(180deg, #fff, #f8fbff);
+      height: 34vh;
+      position: relative;
+      cursor: zoom-in;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.4);
+    }
+    .preview-zoom-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      transform-origin: 50% 50%;
+      will-change: transform;
+    }
+    .img-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+    .crop-card {
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      padding: 8px;
+      background: linear-gradient(180deg, #ffffff, #f8fbff);
+      cursor: pointer;
+      transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+    }
+    .crop-card:hover {
+      border-color: var(--border-strong);
+      box-shadow: 0 8px 20px rgba(40, 69, 130, 0.12);
+      transform: translateY(-1px);
+    }
+    .crop-card:focus {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+    .crop-card img {
+      width: 100%;
+      height: 110px;
+      object-fit: contain;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      background: #fff;
+      pointer-events: none;
+    }
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.55);
+    }
+    .modal-dialog {
+      position: relative;
+      z-index: 1;
+      max-width: min(92vw, 900px);
+      max-height: 90vh;
+      overflow: auto;
+      background: #fff;
+      border-radius: 14px;
+      padding: 16px 20px 20px;
+      box-shadow: 0 18px 50px rgba(11, 25, 61, 0.28);
+    }
+    .modal-close {
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      width: 36px;
+      height: 36px;
+      border: none;
+      background: #eef3ff;
+      border-radius: 6px;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+      color: #333;
+    }
+    .modal-close:hover { background: #dde8ff; }
+    #cropDetailImg {
+      display: block;
+      max-width: 100%;
+      max-height: min(62vh, 620px);
+      width: auto;
+      height: auto;
+      margin: 0 auto 14px;
+      object-fit: contain;
+      border: 1px solid var(--border-soft);
+      border-radius: 8px;
+      background: #f8fbff;
+    }
+    .crop-detail-text {
+      font-size: 14px;
+      line-height: 1.5;
+      color: #2b3652;
+    }
+    .crop-detail-text dt { font-weight: 600; color: #4f5f84; margin-top: 8px; }
+    .crop-detail-text dd { margin: 2px 0 0 0; }
+    .crop-detail-text dl { margin: 0; }
+    .muted { color: #506081; font-size: 12px; }
+    .analysis-highlight {
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      border: 1px solid #bfd2ff;
+      border-left: 5px solid var(--primary);
+      border-radius: 10px;
+      background: linear-gradient(135deg, #eef4ff, #f8fbff);
+      color: #1f3f8f;
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.4;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+    }
+    pre {
+      margin: 0;
+      background: #0f172a;
+      color: #d4def5;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid #1c2b4a;
+      max-height: 26vh;
+      overflow: auto;
+    }
+    h1, h2, h3, h4 {
+      margin-top: 0;
+      color: #1f2d50;
+      letter-spacing: 0.1px;
+    }
+    code {
+      background: #eef3ff;
+      border: 1px solid #d9e4ff;
+      border-radius: 6px;
+      padding: 2px 5px;
+      color: #29438a;
+    }
+
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr; height: auto; }
+      .preview-row { grid-template-columns: 1fr; }
+      .preview-zoom-wrap { height: 24vh; }
+      pre { max-height: 40vh; }
+    }
+  </style>
 </head>
 <body>
-    <h1>Merch Analyzer (SKU110K)</h1>
-    <p>Загрузи фото полки, получи детекцию и базовую аналитику наполненности.</p>
+  <div class="layout">
+    <div class="left-col">
+      <div class="card">
+        <h1>Анализ товаров</h1>
+        <p class="hint">Каталог разметок: <code>{{ reference_db_path }}</code><br>Результаты: <code>{{ sku_results_dir }}</code></p>
+      </div>
 
-    <div class="grid">
-        <div class="card">
-            <form action="/analyze" method="post" enctype="multipart/form-data">
-                <label>Фото полки</label>
-                <input type="file" name="image" accept="image/*" required />
-                <button type="submit">Запустить анализ</button>
-            </form>
-            {% if error %}
-                <p class="error">{{ error }}</p>
-            {% endif %}
+      <div class="card">
+        <h2>Шаг 1: Разметка фото</h2>
+        <form id="referenceForm">
+          <div class="row">
+            <div>
+              <label for="layoutNameInput">Название разметки</label>
+              <input id="layoutNameInput" name="sku" required autocomplete="off" placeholder="Например, полка_А_утро">
+            </div>
+            <div>
+              <label for="referenceImage">Фото для разбора</label>
+              <input id="referenceImage" name="reference_image" type="file" accept="image/*" required>
+            </div>
+          </div>
+          <p><button type="submit">Разобрать и сохранить</button></p>
+        </form>
+
+        <div class="row">
+          <div>
+            <label for="referenceHistorySelect">Предыдущие разборы</label>
+            <select id="referenceHistorySelect">
+              <option value="">Выберите разбор</option>
+            </select>
+          </div>
+          <div>
+            <button type="button" id="showReferenceHistoryBtn">Показать выбранный</button>
+          </div>
         </div>
+      </div>
 
-        <div class="card">
-            {% if metrics %}
-                <div class="metrics">
-                    <div class="metric"><b>Позиции</b><br>{{ metrics.item_count }}</div>
-                    <div class="metric"><b>Заполненность</b><br>{{ '%.1f' % (metrics.occupancy_ratio * 100) }}%</div>
-                    <div class="metric"><b>Пустота</b><br>{{ '%.1f' % (metrics.empty_ratio * 100) }}%</div>
-                    <div class="metric"><b>Плотность выкладки</b><br>{{ '%.2f' % metrics.density_score }}</div>
-                </div>
+      <div class="card">
+        <h2>Шаг 2: Распознавание позиций (LM Studio)</h2>
+        <p class="hint">Берутся кропы из выбранного разбора (шаг 1), отдельное фото не нужно.</p>
+        <form id="recognizeForm">
+          <div class="row">
+            <div>
+              <label for="recognitionNameInput">Название распознавания</label>
+              <input id="recognitionNameInput" name="sku" required autocomplete="off" placeholder="Должно совпадать с названием разметки шага 1">
+            </div>
+            <div>
+              <label for="referenceResultDir">Сохранённый разбор (обязательно)</label>
+              <select id="referenceResultDir" name="reference_result_dir" required>
+                <option value="" disabled selected>Выберите сохранённый разбор</option>
+              </select>
+            </div>
+          </div>
+          <p><button type="submit">Распознать в LM Studio</button></p>
+        </form>
 
-                <h3>По рядам</h3>
-                <table>
-                    <thead>
-                        <tr><th>Ряд</th><th>Позиции</th><th>Заполненность</th></tr>
-                    </thead>
-                    <tbody>
-                        {% for row in metrics.rows %}
-                            <tr>
-                                <td>{{ row.row }}</td>
-                                <td>{{ row["items"] }}</td>
-                                <td>{{ '%.1f' % (row.occupancy * 100) }}%</td>
-                            </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-
-                {% if similar_groups and similar_groups.group_count > 0 %}
-                    <h3>Похожие позиции (кластеризация)</h3>
-                    <p>Найдено групп: <b>{{ similar_groups.group_count }}</b></p>
-                    <div class="sim-groups" id="sim-groups">
-                        {% for group in similar_groups.groups %}
-                            <div class="sim-group" data-group-id="{{ group.id }}">
-                                <div><b>Группа {{ group.id }}</b></div>
-                                <div>Похожих товаров: {{ group.count }}</div>
-                                <div>Ряд: {{ group.row }}</div>
-                                <div>Средний score: {{ '%.2f' % group.avg_score }}</div>
-                                <div class="sim-preview">
-                                    {% for crop_b64 in group.preview_images %}
-                                        <img src="data:image/jpeg;base64,{{ crop_b64 }}" alt="similar item" />
-                                    {% endfor %}
-                                </div>
-                            </div>
-                        {% endfor %}
-                    </div>
-                {% endif %}
-
-                {% if similar_groups and similar_groups["items"] %}
-                    <h3>Все товары с группами</h3>
-                    <div class="toolbar">
-                        <select id="group-filter">
-                            <option value="all">Все группы</option>
-                            {% for group in similar_groups.groups %}
-                                <option value="{{ group.id }}">Группа {{ group.id }}</option>
-                            {% endfor %}
-                        </select>
-                        <select id="sort-mode">
-                            <option value="id">Сортировка: по номеру</option>
-                            <option value="group">Сортировка: по группе</option>
-                            <option value="score">Сортировка: по score</option>
-                        </select>
-                        <button type="button" id="reset-filters">Сбросить</button>
-                    </div>
-                    <div class="small-text" id="items-count"></div>
-                    <div class="items-grid">
-                        {% for item in similar_groups["items"] %}
-                            <div class="item-card"
-                                 data-item-id="{{ item.item_id }}"
-                                 data-group-id="{{ item.group_id }}"
-                                 data-score="{{ '%.5f' % item.score }}"
-                                 data-x1="{{ '%.3f' % item.bbox.x1 }}"
-                                 data-y1="{{ '%.3f' % item.bbox.y1 }}"
-                                 data-x2="{{ '%.3f' % item.bbox.x2 }}"
-                                 data-y2="{{ '%.3f' % item.bbox.y2 }}">
-                                <img src="data:image/jpeg;base64,{{ item.crop_image }}" alt="item {{ item.item_id }}" />
-                                <div><b>Товар #{{ item.item_id }}</b></div>
-                                <div class="badge">Группа {{ item.group_id }}</div>
-                                <div>Ряд: {{ item.row }}</div>
-                                <div>score: {{ '%.2f' % item.score }}</div>
-                            </div>
-                        {% endfor %}
-                    </div>
-                {% endif %}
-
-                <h3>Разметка</h3>
-                <div class="result-image-wrap" id="result-image-wrap">
-                    <img src="data:image/jpeg;base64,{{ result_image_b64 }}" alt="Detection result" id="result-image" />
-                    <div class="overlay-layer" id="overlay-layer"></div>
-                    <div class="overlay-tooltip" id="overlay-tooltip"></div>
-                </div>
-            {% else %}
-                <p>Результаты появятся после загрузки изображения.</p>
-            {% endif %}
+        <div class="row">
+          <div>
+            <label for="lmRecognitionHistorySelect">Сохранённые распознавания LM</label>
+            <select id="lmRecognitionHistorySelect">
+              <option value="">Выберите прогон</option>
+            </select>
+          </div>
+          <div>
+            <button type="button" id="showLmRecognitionHistoryBtn">Показать выбранное</button>
+          </div>
         </div>
+      </div>
     </div>
-    <script>
-        (function () {
-            const grid = document.querySelector(".items-grid");
-            if (!grid) return;
 
-            const cards = Array.from(grid.querySelectorAll(".item-card"));
-            const groups = Array.from(document.querySelectorAll(".sim-group"));
-            const groupFilter = document.getElementById("group-filter");
-            const sortMode = document.getElementById("sort-mode");
-            const resetBtn = document.getElementById("reset-filters");
-            const countEl = document.getElementById("items-count");
-            const resultImage = document.getElementById("result-image");
-            const imageWrap = document.getElementById("result-image-wrap");
-            const overlayLayer = document.getElementById("overlay-layer");
-            const overlayTooltip = document.getElementById("overlay-tooltip");
-            let pinnedGroup = "all";
-            let overlayBoxes = [];
+    <div class="right-col">
+      <div class="card" id="referenceVisual" style="display:none">
+        <h3 id="visualTitle">Результат</h3>
+        <div id="visualAnalysis" class="analysis-highlight" style="display:none"></div>
+        <div class="preview-row">
+          <div class="preview">
+            <div class="muted" id="refInputLabel">Входное фото</div>
+            <div class="preview-zoom-wrap" title="Наведите и двигайте курсор — увеличение следует за мышью">
+              <img id="refInputImg" alt="Входное фото">
+            </div>
+          </div>
+          <div class="preview">
+            <div class="muted" id="refAnnotatedLabel">Размеченное фото (SKU110K)</div>
+            <div class="preview-zoom-wrap" title="Наведите и двигайте курсор — увеличение следует за мышью">
+              <img id="refAnnotatedImg" alt="Размеченное фото">
+            </div>
+          </div>
+        </div>
+        <h4 id="cropsSectionTitle">Кропы позиций</h4>
+        <div id="refCrops" class="img-grid"></div>
+      </div>
 
-            function groupHue(groupId) {
-                const gid = Number(groupId) || 0;
-                return (gid * 47) % 360;
-            }
+      <div class="card">
+        <h3>Ответ API</h3>
+        <pre id="output">Ожидание запроса...</pre>
+      </div>
+    </div>
+  </div>
 
-            function setActiveGroup(groupId, itemId) {
-                const hasGroup = groupId && groupId !== "all";
-                groups.forEach((g) => g.classList.toggle("active", hasGroup && g.dataset.groupId === groupId));
-                cards.forEach((c) => {
-                    c.classList.toggle("active", hasGroup && c.dataset.groupId === groupId);
-                });
+  <div id="cropDetailModal" class="modal" style="display: none" aria-hidden="true">
+    <div class="modal-backdrop" id="cropDetailBackdrop"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="cropDetailTitle">
+      <button type="button" class="modal-close" id="cropDetailClose" aria-label="Закрыть">×</button>
+      <h4 id="cropDetailTitle" style="margin: 0 40px 12px 0; font-size: 16px;">Позиция</h4>
+      <img id="cropDetailImg" alt="">
+      <div id="cropDetailText" class="crop-detail-text"></div>
+    </div>
+  </div>
 
-                if (overlayBoxes.length) {
-                    imageWrap.classList.toggle("has-focus", hasGroup);
-                    overlayBoxes.forEach((box) => {
-                        const isGroup = hasGroup && box.dataset.groupId === groupId;
-                        const isItem = hasGroup && itemId && box.dataset.itemId === itemId;
-                        box.classList.toggle("group-match", isGroup);
-                        box.classList.toggle("item-match", isItem);
-                    });
-                }
-            }
+  <script>
+    const output = document.getElementById("output");
+    const PREVIEW_ZOOM_SCALE = 2.1;
 
-            function showTooltip(box) {
-                if (!overlayTooltip) return;
-                overlayTooltip.style.display = "block";
-                overlayTooltip.innerHTML =
-                    "Товар #" + box.dataset.itemId +
-                    "<br>Группа " + box.dataset.groupId +
-                    "<br>score: " + Number(box.dataset.score).toFixed(2);
-                const rect = box.getBoundingClientRect();
-                const wrapRect = imageWrap.getBoundingClientRect();
-                const left = rect.left - wrapRect.left + rect.width / 2;
-                const top = rect.top - wrapRect.top - 8;
-                overlayTooltip.style.left = Math.max(0, left - 40) + "px";
-                overlayTooltip.style.top = Math.max(0, top - 40) + "px";
-            }
+    function setupPreviewZoomFollow() {
+      document.querySelectorAll(".preview-zoom-wrap").forEach((wrap) => {
+        const img = wrap.querySelector("img");
+        if (!img || wrap.dataset.zoomBound === "1") return;
+        wrap.dataset.zoomBound = "1";
 
-            function hideTooltip() {
-                if (overlayTooltip) overlayTooltip.style.display = "none";
-            }
+        function applyZoom(e) {
+          const rect = wrap.getBoundingClientRect();
+          const w = rect.width || 1;
+          const h = rect.height || 1;
+          let x = ((e.clientX - rect.left) / w) * 100;
+          let y = ((e.clientY - rect.top) / h) * 100;
+          x = Math.max(0, Math.min(100, x));
+          y = Math.max(0, Math.min(100, y));
+          img.style.transformOrigin = `${x}% ${y}%`;
+          img.style.transform = `scale(${PREVIEW_ZOOM_SCALE})`;
+        }
 
-            function renderOverlay() {
-                if (!resultImage || !overlayLayer) return;
-                overlayLayer.innerHTML = "";
-                const nW = resultImage.naturalWidth;
-                const nH = resultImage.naturalHeight;
-                const cW = resultImage.clientWidth;
-                const cH = resultImage.clientHeight;
-                if (!nW || !nH || !cW || !cH) return;
+        function clearZoom() {
+          img.style.transform = "";
+          img.style.transformOrigin = "50% 50%";
+        }
 
-                const sx = cW / nW;
-                const sy = cH / nH;
+        wrap.addEventListener("pointerenter", applyZoom);
+        wrap.addEventListener("pointermove", applyZoom);
+        wrap.addEventListener("pointerleave", clearZoom);
+      });
+    }
 
-                overlayBoxes = cards.map((card) => {
-                    const x1 = Number(card.dataset.x1) * sx;
-                    const y1 = Number(card.dataset.y1) * sy;
-                    const x2 = Number(card.dataset.x2) * sx;
-                    const y2 = Number(card.dataset.y2) * sy;
-                    const box = document.createElement("div");
-                    box.className = "overlay-box";
-                    box.dataset.groupId = card.dataset.groupId;
-                    box.dataset.itemId = card.dataset.itemId;
-                    box.dataset.score = card.dataset.score;
-                    box.style.setProperty("--hue", String(groupHue(card.dataset.groupId)));
-                    box.style.left = x1 + "px";
-                    box.style.top = y1 + "px";
-                    box.style.width = Math.max(2, x2 - x1) + "px";
-                    box.style.height = Math.max(2, y2 - y1) + "px";
-                    box.addEventListener("mouseenter", () => {
-                        setActiveGroup(box.dataset.groupId, box.dataset.itemId);
-                        showTooltip(box);
-                    });
-                    box.addEventListener("mouseleave", () => {
-                        hideTooltip();
-                        setActiveGroup(pinnedGroup);
-                    });
-                    overlayLayer.appendChild(box);
-                    return box;
-                });
+    async function sendForm(form, url) {
+      const fd = new FormData(form);
+      const resp = await fetch(url, { method: "POST", body: fd });
+      const payload = await resp.json();
+      output.textContent = JSON.stringify(payload, null, 2);
+      return payload;
+    }
 
-                setActiveGroup(pinnedGroup);
-            }
+    function escapeHtml(s) {
+      const d = document.createElement("div");
+      d.textContent = s == null ? "" : String(s);
+      return d.innerHTML;
+    }
 
-            function applyFilterAndSort() {
-                const selectedGroup = groupFilter.value;
-                const mode = sortMode.value;
-                let visible = 0;
+    function openCropDetailModal(item, kind) {
+      const modal = document.getElementById("cropDetailModal");
+      const imgEl = document.getElementById("cropDetailImg");
+      const textEl = document.getElementById("cropDetailText");
+      const titleEl = document.getElementById("cropDetailTitle");
+      imgEl.src = item.crop_url || "";
+      imgEl.alt = `Позиция ${item.index}`;
+      titleEl.textContent = `Позиция #${item.index}`;
 
-                cards.forEach((card) => {
-                    const match = selectedGroup === "all" || card.dataset.groupId === selectedGroup;
-                    card.classList.toggle("hidden", !match);
-                    if (match) visible += 1;
-                });
+      const rows = [];
+      if (kind === "lm_recognition") {
+        const lm = item.lm || {};
+        rows.push(["Название (LM)", lm.item_name || "—"]);
+        rows.push(["Нормализованное имя", lm.normalized_name || "—"]);
+        rows.push(["Уверенность", (lm.confidence != null ? lm.confidence : 0).toFixed(2)]);
+        rows.push(["Статус", lm.status || "—"]);
+        rows.push(["Метка SKU110K", item.sku110k_label || item.label || "—"]);
+        rows.push(["Оценка детектора", (item.sku110k_score != null ? item.sku110k_score : item.score ?? 0).toFixed(2)]);
+        if (item.reference_bbox && typeof item.reference_bbox === "object") {
+          const b = item.reference_bbox;
+          rows.push([
+            "BBox",
+            `x1=${b.x1} y1=${b.y1} x2=${b.x2} y2=${b.y2}`,
+          ]);
+        }
+        if (item.crop_path) rows.push(["Файл кропа", item.crop_path]);
+      } else {
+        rows.push(["Метка", item.label || "—"]);
+        rows.push(["Оценка", (item.score != null ? item.score : 0).toFixed(2)]);
+        if (item.bbox && typeof item.bbox === "object") {
+          const b = item.bbox;
+          rows.push(["BBox", `x1=${b.x1} y1=${b.y1} x2=${b.x2} y2=${b.y2}`]);
+        }
+        if (item.crop_path) rows.push(["Файл кропа", item.crop_path]);
+      }
 
-                const sorted = [...cards].sort((a, b) => {
-                    if (mode === "score") return Number(b.dataset.score) - Number(a.dataset.score);
-                    if (mode === "group") {
-                        const g = Number(a.dataset.groupId) - Number(b.dataset.groupId);
-                        if (g !== 0) return g;
-                        return Number(a.dataset.itemId) - Number(b.dataset.itemId);
-                    }
-                    return Number(a.dataset.itemId) - Number(b.dataset.itemId);
-                });
-                sorted.forEach((card) => grid.appendChild(card));
+      let html = "<dl>";
+      rows.forEach(([dt, dd]) => {
+        html += `<dt>${escapeHtml(dt)}</dt><dd>${escapeHtml(dd)}</dd>`;
+      });
+      html += "</dl>";
+      textEl.innerHTML = html;
 
-                countEl.textContent = "Показано товаров: " + visible + " / " + cards.length;
-                pinnedGroup = selectedGroup;
-                setActiveGroup(pinnedGroup);
-            }
+      modal.style.display = "flex";
+      modal.setAttribute("aria-hidden", "false");
+      document.body.style.overflow = "hidden";
+    }
 
-            groups.forEach((groupCard) => {
-                groupCard.style.cursor = "pointer";
-                groupCard.addEventListener("click", () => {
-                    const groupId = groupCard.dataset.groupId;
-                    groupFilter.value = groupId;
-                    applyFilterAndSort();
-                });
-            });
+    function closeCropDetailModal() {
+      const modal = document.getElementById("cropDetailModal");
+      modal.style.display = "none";
+      modal.setAttribute("aria-hidden", "true");
+      document.body.style.overflow = "";
+      const imgEl = document.getElementById("cropDetailImg");
+      imgEl.removeAttribute("src");
+    }
 
-            groupFilter.addEventListener("change", applyFilterAndSort);
-            sortMode.addEventListener("change", applyFilterAndSort);
-            resetBtn.addEventListener("click", () => {
-                groupFilter.value = "all";
-                sortMode.value = "id";
-                applyFilterAndSort();
-            });
-            cards.forEach((card) => {
-                card.addEventListener("mouseenter", () => setActiveGroup(card.dataset.groupId, card.dataset.itemId));
-                card.addEventListener("mouseleave", () => setActiveGroup(pinnedGroup));
-            });
-            window.addEventListener("resize", renderOverlay);
-            if (resultImage) {
-                if (resultImage.complete) renderOverlay();
-                resultImage.addEventListener("load", renderOverlay);
-            }
+    (function setupCropModal() {
+      const modal = document.getElementById("cropDetailModal");
+      document.getElementById("cropDetailClose").addEventListener("click", closeCropDetailModal);
+      document.getElementById("cropDetailBackdrop").addEventListener("click", closeCropDetailModal);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && modal.style.display === "flex") closeCropDetailModal();
+      });
+    })();
 
-            applyFilterAndSort();
-        })();
-    </script>
+    function renderVisual(payload) {
+      const visual = payload?.visual;
+      const panel = document.getElementById("referenceVisual");
+      if (!visual) {
+        panel.style.display = "none";
+        return;
+      }
+      panel.style.display = "block";
+      const kind = visual.kind || "reference";
+      document.getElementById("visualTitle").textContent =
+        kind === "lm_recognition"
+          ? "Распознавание: кропы разбора → LM Studio"
+          : "Разбор фото (SKU110K)";
+      document.getElementById("refInputLabel").textContent =
+        kind === "lm_recognition" ? "Исходное фото разбора" : "Входное фото";
+      document.getElementById("refAnnotatedLabel").textContent =
+        kind === "lm_recognition" ? "Подписи LM на зонах позиций" : "Размеченное фото (SKU110K)";
+      document.getElementById("cropsSectionTitle").textContent =
+        kind === "lm_recognition" ? "Кропы позиций + распознавание LM" : "Кропы позиций";
+
+      document.getElementById("refInputImg").src = visual.input_url || "";
+      document.getElementById("refAnnotatedImg").src = visual.annotated_url || "";
+      const analysisNode = document.getElementById("visualAnalysis");
+      if (kind === "reference" && visual.analysis) {
+        const analysis = visual.analysis || {};
+        const shelfCount = Number(analysis.shelf_count || 0);
+        const positionsCount = Number(analysis.positions_count || 0);
+        const perShelf = Array.isArray(analysis.objects_per_shelf) ? analysis.objects_per_shelf : [];
+        const shelfText = perShelf
+          .map((s) => `полка ${Number(s.shelf || 0)}: ${Number(s.count || 0)}`)
+          .join(", ");
+        analysisNode.textContent = `Анализ: полок ${shelfCount}, объектов ${positionsCount}${shelfText ? ` (${shelfText})` : ""}`;
+        analysisNode.style.display = "block";
+      } else {
+        analysisNode.textContent = "";
+        analysisNode.style.display = "none";
+      }
+
+      const cropsNode = document.getElementById("refCrops");
+      cropsNode.innerHTML = "";
+      const list =
+        kind === "lm_recognition" ? (visual.positions || []) : (visual.crops || []);
+      list.forEach((item) => {
+        const wrap = document.createElement("div");
+        wrap.className = "crop-card";
+        wrap.setAttribute("role", "button");
+        wrap.tabIndex = 0;
+        wrap.title = "Нажмите для просмотра крупно и подробностей";
+        const img = document.createElement("img");
+        img.src = item.crop_url || "";
+        img.alt = `crop_${item.index}`;
+        const txt = document.createElement("div");
+        txt.className = "muted";
+        if (kind === "lm_recognition" && item.lm) {
+          const lm = item.lm;
+          txt.innerHTML =
+            `#${item.index} <b>${lm.item_name || "unknown"}</b><br>` +
+            `conf=${(lm.confidence ?? 0).toFixed(2)} status=${lm.status || ""}<br>` +
+            `norm: ${lm.normalized_name || ""}`;
+        } else {
+          txt.textContent = `#${item.index} ${item.label || "item"} (${(item.score ?? 0).toFixed(2)})`;
+        }
+        const open = () => openCropDetailModal(item, kind);
+        wrap.addEventListener("click", open);
+        wrap.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            open();
+          }
+        });
+        wrap.appendChild(img);
+        wrap.appendChild(txt);
+        cropsNode.appendChild(wrap);
+      });
+    }
+
+    async function loadHistoryForReferenceSku() {
+      const layoutName = (document.getElementById("layoutNameInput").value || "").trim();
+      const select = document.getElementById("referenceHistorySelect");
+      select.innerHTML = '<option value="">Выберите разбор</option>';
+      const url = layoutName
+        ? `/reference-folder/history?sku=${encodeURIComponent(layoutName)}`
+        : "/reference-folder/history";
+      const resp = await fetch(url);
+      const payload = await resp.json();
+      const items = payload.items || [];
+      items.forEach((item, idx) => {
+        const opt = document.createElement("option");
+        opt.value = String(idx);
+        opt.textContent =
+          `«${item.sku || "—"}» · ${item.reference_filename || "photo"} · позиций: ${item.positions_count || 0}`;
+        opt.dataset.visual = JSON.stringify(item.visual || {});
+        select.appendChild(opt);
+      });
+      return items;
+    }
+
+    async function loadHistoryForSku(markupName) {
+      const select = document.getElementById("referenceResultDir");
+      select.innerHTML = '<option value="" disabled selected>Выберите сохранённый разбор</option>';
+      const trimmed = (markupName || "").trim();
+      const url = trimmed
+        ? `/reference-folder/history?sku=${encodeURIComponent(trimmed)}`
+        : "/reference-folder/history";
+      const resp = await fetch(url);
+      const payload = await resp.json();
+      (payload.items || []).forEach((item) => {
+        const opt = document.createElement("option");
+        const rd = String(item.result_dir || "").replace(/\\/g, "/");
+        opt.value = rd;
+        opt.dataset.markupName = item.sku || "";
+        opt.textContent =
+          `«${item.sku || "—"}» · ${item.reference_filename || "photo"} · позиций: ${item.positions_count || 0}`;
+        select.appendChild(opt);
+      });
+    }
+
+    let lmRecognitionItemsCache = [];
+
+    function lmRunFolderLabel(resultDir) {
+      const s = String(resultDir || "").replace(/\\/g, "/");
+      const parts = s.split("/").filter(Boolean);
+      return parts[parts.length - 1] || s || "—";
+    }
+
+    async function loadLmRecognitionHistory(recognitionFilter) {
+      const select = document.getElementById("lmRecognitionHistorySelect");
+      select.innerHTML = '<option value="">Выберите прогон</option>';
+      const trimmed = (recognitionFilter || "").trim();
+      const url = trimmed
+        ? `/lm-recognition/history?sku=${encodeURIComponent(trimmed)}`
+        : "/lm-recognition/history";
+      const resp = await fetch(url);
+      const payload = await resp.json();
+      lmRecognitionItemsCache = payload.items || [];
+      lmRecognitionItemsCache.forEach((item, idx) => {
+        const opt = document.createElement("option");
+        opt.value = String(idx);
+        opt.textContent =
+          `«${item.sku || "—"}» · ${item.positions_count || 0} поз. · ${lmRunFolderLabel(item.result_dir)}`;
+        select.appendChild(opt);
+      });
+      return lmRecognitionItemsCache;
+    }
+
+    document.getElementById("referenceForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const payload = await sendForm(e.currentTarget, "/reference/save");
+      renderVisual(payload);
+      const layoutName = (document.getElementById("layoutNameInput").value || "").trim();
+      if (layoutName) {
+        document.getElementById("recognitionNameInput").value = layoutName;
+        await loadHistoryForSku(layoutName);
+        await loadLmRecognitionHistory(layoutName);
+      }
+    });
+
+    let layoutNameInputTimer = null;
+    document.getElementById("layoutNameInput").addEventListener("input", () => {
+      if (layoutNameInputTimer) clearTimeout(layoutNameInputTimer);
+      layoutNameInputTimer = setTimeout(async () => {
+        await loadHistoryForReferenceSku();
+      }, 250);
+    });
+
+    document.getElementById("showReferenceHistoryBtn").addEventListener("click", () => {
+      const select = document.getElementById("referenceHistorySelect");
+      const opt = select.options[select.selectedIndex];
+      if (!opt || !opt.dataset.visual) return;
+      renderVisual({ visual: JSON.parse(opt.dataset.visual) });
+    });
+
+    document.getElementById("showLmRecognitionHistoryBtn").addEventListener("click", () => {
+      const select = document.getElementById("lmRecognitionHistorySelect");
+      const idx = parseInt(select.value, 10);
+      if (Number.isNaN(idx) || idx < 0 || idx >= lmRecognitionItemsCache.length) return;
+      const item = lmRecognitionItemsCache[idx];
+      if (!item || !item.visual) return;
+      renderVisual({ visual: item.visual });
+      output.textContent = JSON.stringify(
+        {
+          ok: true,
+          sku: item.sku,
+          result_dir: item.result_dir,
+          reference_result_dir: item.reference_result_dir,
+          positions_lm_count: item.positions_count,
+          per_position: item.per_position,
+          visual: item.visual,
+        },
+        null,
+        2,
+      );
+    });
+
+    document.getElementById("referenceResultDir").addEventListener("change", () => {
+      const select = document.getElementById("referenceResultDir");
+      const opt = select.options[select.selectedIndex];
+      if (opt && opt.dataset.markupName) {
+        document.getElementById("recognitionNameInput").value = opt.dataset.markupName;
+      }
+    });
+
+    let recognitionNameInputTimer = null;
+    document.getElementById("recognitionNameInput").addEventListener("input", () => {
+      if (recognitionNameInputTimer) clearTimeout(recognitionNameInputTimer);
+      recognitionNameInputTimer = setTimeout(async () => {
+        const name = (document.getElementById("recognitionNameInput").value || "").trim();
+        await loadHistoryForSku(name);
+        await loadLmRecognitionHistory(name);
+      }, 300);
+    });
+
+    document.getElementById("recognizeForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const payload = await sendForm(e.currentTarget, "/recognize");
+      renderVisual(payload);
+      const name = (document.getElementById("recognitionNameInput").value || "").trim();
+      await loadLmRecognitionHistory(name);
+    });
+
+    setupPreviewZoomFollow();
+
+    loadHistoryForReferenceSku();
+    loadHistoryForSku("");
+    loadLmRecognitionHistory("");
+  </script>
 </body>
 </html>
