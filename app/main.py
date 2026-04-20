@@ -634,22 +634,21 @@ async def get_lm_recognition_history(sku: str = "") -> JSONResponse:
     return JSONResponse({"ok": True, "sku": sku_key, "items": rows})
 
 
-def _resolve_reference_record(sku_key: str, reference_result_dir: str, db: dict[str, Any]) -> dict[str, Any] | None:
+def _resolve_reference_record(reference_result_dir: str) -> dict[str, Any] | None:
+    """Найти разбор шага 1 только по пути result_dir; название распознавания (sku) не проверяется."""
     selected = reference_result_dir.strip()
     if not selected:
         return None
-    want = _result_dir_to_project_path(selected)
-    runs = _get_all_runs_for_sku(db, sku_key)
-    for r in runs:
-        try:
-            if _result_dir_to_project_path(str(r.get("result_dir", ""))) == want:
-                return r
-        except OSError:
-            continue
     disk = _load_reference_record_from_disk(selected)
     if disk is None:
         return None
-    if str(disk.get("sku", "")).strip() != sku_key:
+    if str(disk.get("kind", "")).strip() != "reference":
+        return None
+    ref_pos = disk.get("reference_positions")
+    if not isinstance(ref_pos, dict):
+        return None
+    positions = ref_pos.get("positions")
+    if not isinstance(positions, list) or not positions:
         return None
     return disk
 
@@ -668,13 +667,12 @@ async def recognize_reference_crops(
     if not selected_dir:
         return JSONResponse({"ok": False, "error": "Выберите сохранённый разбор (reference_result_dir)"}, status_code=400)
 
-    db = _db_load()
-    reference = _resolve_reference_record(sku_key, selected_dir, db)
+    reference = _resolve_reference_record(selected_dir)
     if reference is None:
         return JSONResponse(
             {
                 "ok": False,
-                "error": "Разбор не найден или название распознавания не совпадает с сохранённой разметкой",
+                "error": "Разбор не найден: проверьте путь к папке шага 1 и наличие result.json с позициями",
             },
             status_code=404,
         )
@@ -762,7 +760,7 @@ async def recognize_reference_crops(
     except ValueError:
         sim_th = 0.88
 
-    batch_single = _truthy_env("LM_BATCH_CLASSIFY_SINGLE_REQUEST")
+    batch_single = _truthy_env("LM_BATCH_CLASSIFY_SINGLE_REQUEST", default="1")
     shared_group = _truthy_env("LM_SHARED_CLASSIFY_PER_SIMILARITY_GROUP")
     if batch_single and crops_for_lm:
         lm_results = lm.classify_crops_batch_chunked(crops_for_lm)
@@ -779,13 +777,12 @@ async def recognize_reference_crops(
         bbox_ref = task["bbox_ref"]
         crop_pil = task["crop_pil"]
 
-        crop_url: str
-        if crop_rel_str and (ref_base / Path(crop_rel_str)).is_file():
-            crop_url = _file_url_under_sku_results("reference", ref_run_id, crop_rel_str)
-        else:
-            recrop_rel = Path("crops") / f"recrop_{idx:03d}.jpg"
-            crop_pil.save(str(run_dir / recrop_rel), format="JPEG", quality=92)
-            crop_url = _file_url_under_sku_results("lm_recognition", lm_run_id, str(recrop_rel).replace("\\", "/"))
+        out_crop_rel = Path("crops") / f"crop_{idx:03d}.jpg"
+        crop_pil.save(str(run_dir / out_crop_rel), format="JPEG", quality=92)
+        crop_url = _file_url_under_sku_results(
+            "lm_recognition", lm_run_id, str(out_crop_rel).replace("\\", "/")
+        )
+        crop_saved_rel = str(out_crop_rel).replace("\\", "/")
 
         if isinstance(bbox_ref, dict):
             box_d = _bbox_to_int_crop(bbox_ref, full_img.width, full_img.height)
@@ -802,7 +799,8 @@ async def recognize_reference_crops(
                 "reference_bbox": bbox_ref if isinstance(bbox_ref, dict) else {},
                 "sku110k_label": str(pos.get("label", "")),
                 "sku110k_score": float(pos.get("score", 0.0) or 0.0),
-                "crop_path": crop_rel_str,
+                "crop_path": crop_saved_rel,
+                "reference_crop_path": crop_rel_str,
                 "crop_url": crop_url,
                 "lm": {
                     "item_name": lm_res.item_name,
@@ -833,6 +831,7 @@ async def recognize_reference_crops(
     payload: dict[str, Any] = {
         "ok": True,
         "sku": sku_key,
+        "reference_markup_sku": str(reference.get("sku", "")).strip(),
         "reference_result_dir": str(reference.get("result_dir", "")),
         "positions_lm_count": len(per_position),
         "per_position": per_position,

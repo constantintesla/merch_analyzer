@@ -278,7 +278,7 @@
           <div class="row">
             <div>
               <label for="recognitionNameInput">Название распознавания</label>
-              <input id="recognitionNameInput" name="sku" required autocomplete="off" placeholder="Должно совпадать с названием разметки шага 1">
+              <input id="recognitionNameInput" name="sku" required autocomplete="off" placeholder="Подпись прогона и фильтр истории LM; не привязано к выбранному разбору">
             </div>
             <div>
               <label for="referenceResultDir">Сохранённый разбор (обязательно)</label>
@@ -415,7 +415,8 @@
             `x1=${b.x1} y1=${b.y1} x2=${b.x2} y2=${b.y2}`,
           ]);
         }
-        if (item.crop_path) rows.push(["Файл кропа", item.crop_path]);
+        if (item.crop_path) rows.push(["Файл кропа (прогон LM)", item.crop_path]);
+        if (item.reference_crop_path) rows.push(["Кроп в папке разбора", item.reference_crop_path]);
       } else {
         rows.push(["Метка", item.label || "—"]);
         rows.push(["Оценка", (item.score != null ? item.score : 0).toFixed(2)]);
@@ -566,7 +567,6 @@
         const opt = document.createElement("option");
         const rd = String(item.result_dir || "").replace(/\\/g, "/");
         opt.value = rd;
-        opt.dataset.markupName = item.sku || "";
         opt.textContent =
           `«${item.sku || "—"}» · ${item.reference_filename || "photo"} · позиций: ${item.positions_count || 0}`;
         select.appendChild(opt);
@@ -608,7 +608,7 @@
       const layoutName = (document.getElementById("layoutNameInput").value || "").trim();
       if (layoutName) {
         document.getElementById("recognitionNameInput").value = layoutName;
-        await loadHistoryForSku(layoutName);
+        await loadHistoryForSku("");
         await loadLmRecognitionHistory(layoutName);
       }
     });
@@ -650,20 +650,11 @@
       );
     });
 
-    document.getElementById("referenceResultDir").addEventListener("change", () => {
-      const select = document.getElementById("referenceResultDir");
-      const opt = select.options[select.selectedIndex];
-      if (opt && opt.dataset.markupName) {
-        document.getElementById("recognitionNameInput").value = opt.dataset.markupName;
-      }
-    });
-
     let recognitionNameInputTimer = null;
     document.getElementById("recognitionNameInput").addEventListener("input", () => {
       if (recognitionNameInputTimer) clearTimeout(recognitionNameInputTimer);
       recognitionNameInputTimer = setTimeout(async () => {
         const name = (document.getElementById("recognitionNameInput").value || "").trim();
-        await loadHistoryForSku(name);
         await loadLmRecognitionHistory(name);
       }, 300);
     });

@@ -11,7 +11,7 @@
 
 - **Шаг 1 — разбор эталона** (`POST /reference/save`): загрузка фото → детекция боксов SKU110K → сохранение `input.jpg`, кропов, разметки с полками (оценка рядов по вертикали bbox) → `result.json` и запись в `data/reference_by_sku.json`.
 - **Шаг 2 — распознавание** (`POST /recognize`): кропы из выбранного разбора → LM Studio (`/v1/chat/completions`) → подписи на изображении, `annotated_lm.jpg`, отдельный прогон в `data/sku_results/lm_recognition/`.
-- **Режимы LM**: по одному кропу, пакетный запрос (`LM_BATCH_CLASSIFY_SINGLE_REQUEST`), или один запрос на кластер похожих кропов (`LM_SHARED_CLASSIFY_PER_SIMILARITY_GROUP` + `SIMILARITY_THRESHOLD`).
+- **Режимы LM**: по умолчанию пакетный запрос (`LM_BATCH_CLASSIFY_SINGLE_REQUEST=true`, `classify_crops_batch_chunked`); иначе по одному кропу, или один запрос на кластер похожих кропов (`LM_SHARED_CLASSIFY_PER_SIMILARITY_GROUP` + `SIMILARITY_THRESHOLD`).
 - **Вспомогательные модули** (для тестов и дальнейшей интеграции): `app/planogram.py`, `planogram_compare.py`, `planogram_store.py`, `item_validation.py` (каталог, fuzzy-сопоставление — см. код и `tests/`).
 
 ## Требования
@@ -132,7 +132,7 @@ merch_analyzer/
 | `LMSTUDIO_TIMEOUT_SEC` | `25` | таймаут HTTP |
 | `LM_CONCURRENT` | `1` | параллельные запросы на шаге `/recognize` |
 | `SIMILARITY_THRESHOLD` | `0.88` | порог для объединения похожих кропов |
-| `LM_BATCH_CLASSIFY_SINGLE_REQUEST` | `false` | один запрос на пачку кропов (JSON) |
+| `LM_BATCH_CLASSIFY_SINGLE_REQUEST` | `true` | один запрос на пачку кропов (JSON) |
 | `LM_SHARED_CLASSIFY_PER_SIMILARITY_GROUP` | `false` | один запрос на кластер похожих кропов |
 | `LM_RECOGNIZE_MAX_POSITIONS` | `0` | лимит позиций для LM (`0` = без лимита) |
 | `ASSORTMENT_CATALOG_PATH` | — | в `env.example`; логика в `item_validation` (не подключена к `/recognize` в текущей версии) |
