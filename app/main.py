@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -13,14 +13,36 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from PIL import Image, ImageDraw, ImageOps
 
+from app.analytics import Detection, assign_shelves_and_positions
 from app.lmstudio_client import ItemClassification, LMStudioClient
+from app.planogram_editor import (
+    build_reference_planogram_json,
+    editor_slots_to_csv,
+    normalize_editor_slots,
+)
+from app.planogram_store import create_planogram, delete_planogram, get_planogram, list_planograms
 from app.similarity import cluster_crop_indices_by_similarity
 from app.sku110k_adapter import SKU110KDetector
+from app.step3_compliance import (
+    build_observed_planogram,
+    build_reference_embeddings,
+    calibrate_thresholds_and_weights,
+    collect_uncertainty_flags,
+    compare_planograms_step3,
+    infer_similar_sku_groups,
+    match_sku_for_crop,
+    parse_reference_planogram,
+    parse_sku_catalog,
+    pass_fail_from_score,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 REFERENCE_DB_PATH = DATA_DIR / "reference_by_sku.json"
 SKU_RESULTS_DIR = DATA_DIR / "sku_results"
+PLANOGRAM_DB_PATH = DATA_DIR / "planograms.db"
+PLANOGRAM_IMAGES_DIR = DATA_DIR / "planogram_images"
+PLANOGRAM_EDITOR_META_DIR = DATA_DIR / "planogram_editor"
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 DEFAULT_LMSTUDIO_URL = "http://desktop-oh7jn1i:1234"
@@ -85,6 +107,12 @@ def _save_reference_positions_sku(
     run_dir: Path,
 ) -> dict[str, Any]:
     detections = detector.detect_image(str(image_path))
+    det_objects: list[Detection] = [
+        Detection(x1=float(d.x1), y1=float(d.y1), x2=float(d.x2), y2=float(d.y2), score=float(d.score), label=str(d.label))
+        for d in detections
+    ]
+    assignments = assign_shelves_and_positions(det_objects, img.width, img.height)
+    assignment_by_idx = {int(a["detection_index"]): a for a in assignments}
     draw_img = img.copy()
     draw = ImageDraw.Draw(draw_img)
     crops_dir = run_dir / "crops"
@@ -110,6 +138,10 @@ def _save_reference_positions_sku(
                 "score": float(det.score),
                 "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
                 "crop_path": str(crop_rel).replace("\\", "/"),
+                "shelf_id": int(assignment_by_idx.get(idx - 1, {}).get("shelf_id", 0) or 0),
+                "position_in_shelf": int(
+                    assignment_by_idx.get(idx - 1, {}).get("position_in_shelf", 0) or 0
+                ),
             }
         )
     shelf_layout = _estimate_shelf_layout(saved_positions)
@@ -487,6 +519,11 @@ async def index(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/planogram/editor", response_class=HTMLResponse)
+async def planogram_editor_screen(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "planogram_editor.html", {"request": request})
+
+
 @app.get("/result-file/{category}/{run_id}/{filename:path}")
 async def result_file(category: str, run_id: str, filename: str) -> FileResponse:
     safe_base = SKU_RESULTS_DIR.resolve()
@@ -498,6 +535,336 @@ async def result_file(category: str, run_id: str, filename: str) -> FileResponse
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Файл результата не найден")
     return FileResponse(str(target))
+
+
+@app.get("/planogram/editor/image/{planogram_id}")
+async def planogram_editor_image(planogram_id: str) -> FileResponse:
+    row = get_planogram(PLANOGRAM_DB_PATH, planogram_id.strip())
+    if row is None or not row.image_path:
+        raise HTTPException(status_code=404, detail="Image not found")
+    p = Path(row.image_path)
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(str(p))
+
+
+@app.get("/planogram/editor/list")
+async def planogram_editor_list() -> JSONResponse:
+    items = list_planograms(PLANOGRAM_DB_PATH)
+    out: list[dict[str, Any]] = []
+    for it in items:
+        pid = str(it.get("id", ""))
+        meta_exists = (PLANOGRAM_EDITOR_META_DIR / f"{pid}.json").is_file()
+        out.append({**it, "has_editor_metadata": meta_exists})
+    return JSONResponse({"ok": True, "items": out})
+
+
+@app.get("/planogram/editor/{planogram_id}")
+async def planogram_editor_get(planogram_id: str) -> JSONResponse:
+    pid = planogram_id.strip()
+    row = get_planogram(PLANOGRAM_DB_PATH, pid)
+    if row is None:
+        return JSONResponse({"ok": False, "error": "planogram not found"}, status_code=404)
+    meta_path = PLANOGRAM_EDITOR_META_DIR / f"{pid}.json"
+    metadata: dict[str, Any] = {}
+    if meta_path.is_file():
+        try:
+            raw = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                metadata = raw
+        except (OSError, json.JSONDecodeError):
+            metadata = {}
+    return JSONResponse(
+        {
+            "ok": True,
+            "planogram": {
+                "id": row.id,
+                "name": row.name,
+                "csv_text": row.csv_text,
+                "created_at": row.created_at,
+                "image_url": f"/planogram/editor/image/{row.id}" if row.image_path else "",
+            },
+            "metadata": metadata,
+        }
+    )
+
+
+@app.delete("/planogram/editor/{planogram_id}")
+async def planogram_editor_delete(planogram_id: str) -> JSONResponse:
+    pid = planogram_id.strip()
+    if not pid:
+        return JSONResponse({"ok": False, "error": "planogram_id is required"}, status_code=400)
+    deleted = delete_planogram(PLANOGRAM_DB_PATH, pid)
+    if not deleted:
+        return JSONResponse({"ok": False, "error": "planogram not found"}, status_code=404)
+
+    meta_path = PLANOGRAM_EDITOR_META_DIR / f"{pid}.json"
+    try:
+        meta_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    ideal_dir = PLANOGRAM_EDITOR_META_DIR / "ideal_images" / pid
+    if ideal_dir.is_dir():
+        for p in ideal_dir.rglob("*"):
+            if p.is_file():
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        for p in sorted(ideal_dir.rglob("*"), reverse=True):
+            if p.is_dir():
+                try:
+                    p.rmdir()
+                except OSError:
+                    pass
+        try:
+            ideal_dir.rmdir()
+        except OSError:
+            pass
+
+    return JSONResponse({"ok": True, "deleted_planogram_id": pid})
+
+
+@app.post("/planogram/editor/save")
+async def planogram_editor_save(
+    name: str = Form(...),
+    slots_json: str = Form(...),
+    ideal_images_map: str = Form(default="[]"),
+    ideal_images: list[UploadFile] = File(default=[]),
+    source_image: UploadFile | None = File(default=None),
+) -> JSONResponse:
+    title = name.strip() or "planogram"
+    try:
+        raw_slots = json.loads(slots_json)
+        if not isinstance(raw_slots, list):
+            raise ValueError("slots_json must be a JSON array")
+        slots = normalize_editor_slots(raw_slots)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return JSONResponse({"ok": False, "error": f"invalid slots_json: {exc}"}, status_code=400)
+
+    image_bytes: bytes | None = None
+    if source_image is not None:
+        image_bytes = await source_image.read()
+        if image_bytes:
+            try:
+                _ = _load_normalized_rgb_image(image_bytes)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse({"ok": False, "error": f"invalid image: {exc}"}, status_code=400)
+
+    csv_text = editor_slots_to_csv(slots)
+    stored = create_planogram(
+        PLANOGRAM_DB_PATH,
+        name=title,
+        csv_text=csv_text,
+        image_bytes=image_bytes,
+        images_dir=PLANOGRAM_IMAGES_DIR,
+    )
+    PLANOGRAM_EDITOR_META_DIR.mkdir(parents=True, exist_ok=True)
+    upload_map_raw = []
+    try:
+        parsed_map = json.loads(ideal_images_map or "[]")
+        if isinstance(parsed_map, list):
+            upload_map_raw = [x for x in parsed_map if isinstance(x, dict)]
+    except json.JSONDecodeError:
+        upload_map_raw = []
+    ideal_dir = PLANOGRAM_EDITOR_META_DIR / "ideal_images" / stored.id
+    ideal_dir.mkdir(parents=True, exist_ok=True)
+    for m in upload_map_raw:
+        try:
+            slot_i = int(m.get("slot_array_index", -1))
+            upload_i = int(m.get("upload_index", -1))
+        except (TypeError, ValueError):
+            continue
+        if slot_i < 0 or slot_i >= len(slots):
+            continue
+        if upload_i < 0 or upload_i >= len(ideal_images):
+            continue
+        uf = ideal_images[upload_i]
+        data = await uf.read()
+        if not data:
+            continue
+        try:
+            _ = _load_normalized_rgb_image(data)
+        except Exception:
+            continue
+        safe = _sanitize_filename_stem(uf.filename or f"slot_{slot_i+1}")
+        dest = ideal_dir / f"slot_{slot_i+1:03d}_{safe}.jpg"
+        Path(dest).write_bytes(data)
+        rel = dest.relative_to(BASE_DIR).as_posix()
+        slots[slot_i]["reference_image_path"] = rel
+        slots[slot_i]["reference_image_url"] = f"/planogram/editor/asset/{rel}"
+
+    meta = {
+        "kind": "planogram_editor",
+        "planogram_id": stored.id,
+        "name": title,
+        "slots": slots,
+        "reference_planogram": build_reference_planogram_json(slots),
+    }
+    (PLANOGRAM_EDITOR_META_DIR / f"{stored.id}.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return JSONResponse(
+        {
+            "ok": True,
+            "planogram_id": stored.id,
+            "name": stored.name,
+            "csv_text": stored.csv_text,
+            "image_url": f"/planogram/editor/image/{stored.id}" if stored.image_path else "",
+            "metadata": meta,
+        }
+    )
+
+
+@app.get("/planogram/editor/asset/{asset_path:path}")
+async def planogram_editor_asset(asset_path: str) -> FileResponse:
+    p = (BASE_DIR / asset_path).resolve()
+    try:
+        p.relative_to(BASE_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid path") from exc
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="asset not found")
+    return FileResponse(str(p))
+
+
+@app.post("/planogram/editor/detect-sku110k")
+async def planogram_editor_detect_sku110k(
+    source_image: UploadFile = File(...),
+) -> JSONResponse:
+    img_bytes = await source_image.read()
+    if not img_bytes:
+        return JSONResponse({"ok": False, "error": "empty image file"}, status_code=400)
+    try:
+        img = _load_normalized_rgb_image(img_bytes)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": f"invalid image: {exc}"}, status_code=400)
+
+    detector = _sku_detector()
+    run_dir = _make_unique_run_dir("planogram_editor_detect", source_image.filename or "editor")
+    input_path = run_dir / "input.jpg"
+    img.save(str(input_path), format="JPEG", quality=92)
+    try:
+        detections = detector.detect_image(str(input_path))
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": f"SKU110K error: {exc}"}, status_code=400)
+
+    det_objects: list[Detection] = [
+        Detection(
+            x1=float(d.x1),
+            y1=float(d.y1),
+            x2=float(d.x2),
+            y2=float(d.y2),
+            score=float(d.score),
+            label=str(d.label),
+        )
+        for d in detections
+    ]
+    assignments = assign_shelves_and_positions(det_objects, img.width, img.height)
+
+    draw_img = img.copy()
+    draw = ImageDraw.Draw(draw_img)
+    slots: list[dict[str, Any]] = []
+    for i, a in enumerate(assignments, start=1):
+        d = a["detection"]
+        x1 = int(max(0, min(d.x1, img.width - 1)))
+        y1 = int(max(0, min(d.y1, img.height - 1)))
+        x2 = int(max(0, min(d.x2, img.width)))
+        y2 = int(max(0, min(d.y2, img.height)))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        draw.rectangle([(x1, y1), (x2, y2)], outline="red", width=3)
+        draw.text(
+            (x1 + 4, max(0, y1 - 14)),
+            f"#{i} P{int(a['shelf_id'])}:{int(a['position_in_shelf'])}",
+            fill="red",
+        )
+        slots.append(
+            {
+                "index": i,
+                "shelf_id": int(a["shelf_id"]),
+                "slot_index": int(a["position_in_shelf"]),
+                "item_name": f"Позиция {i}",
+                "sku_id": f"sku_{i}",
+                "expected_facings": 1,
+                "score": float(d.score),
+                "bbox_norm": {
+                    "x1": x1 / max(1, img.width),
+                    "y1": y1 / max(1, img.height),
+                    "x2": x2 / max(1, img.width),
+                    "y2": y2 / max(1, img.height),
+                },
+            }
+        )
+
+    annotated_path = run_dir / "annotated.jpg"
+    draw_img.save(str(annotated_path), format="JPEG", quality=92)
+    return JSONResponse(
+        {
+            "ok": True,
+            "image_width": int(img.width),
+            "image_height": int(img.height),
+            "slots": slots,
+            "visual": {
+                "kind": "planogram_editor_detect",
+                "annotated_url": _file_url_under_sku_results("planogram_editor_detect", run_dir.name, "annotated.jpg"),
+            },
+        }
+    )
+
+
+@app.post("/planogram/editor/enrich-lm")
+async def planogram_editor_enrich_lm(
+    slots_json: str = Form(...),
+    source_image: UploadFile = File(...),
+) -> JSONResponse:
+    try:
+        raw_slots = json.loads(slots_json)
+        if not isinstance(raw_slots, list):
+            raise ValueError("slots_json must be list")
+        slots = normalize_editor_slots(raw_slots)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": f"invalid slots_json: {exc}"}, status_code=400)
+
+    img_bytes = await source_image.read()
+    if not img_bytes:
+        return JSONResponse({"ok": False, "error": "empty image file"}, status_code=400)
+    try:
+        img = _load_normalized_rgb_image(img_bytes)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": f"invalid image: {exc}"}, status_code=400)
+
+    lm = LMStudioClient(
+        base_url=os.getenv("LMSTUDIO_URL", DEFAULT_LMSTUDIO_URL),
+        model=os.getenv("LMSTUDIO_MODEL", DEFAULT_LMSTUDIO_MODEL),
+        timeout_sec=float(os.getenv("LMSTUDIO_TIMEOUT_SEC", "25")),
+    )
+    enriched: list[dict[str, Any]] = []
+    for s in slots:
+        b = s["bbox_norm"]
+        box = _bbox_to_int_crop(
+            {
+                "x1": float(b["x1"]) * img.width,
+                "y1": float(b["y1"]) * img.height,
+                "x2": float(b["x2"]) * img.width,
+                "y2": float(b["y2"]) * img.height,
+            },
+            img.width,
+            img.height,
+        )
+        if not box:
+            enriched.append(s)
+            continue
+        crop = img.crop(box)
+        ic = lm.classify_crop_with_recheck(crop)
+        x = dict(s)
+        if ic.item_name and ic.item_name != "unknown":
+            x["item_name"] = ic.item_name
+        x["lm_confidence"] = float(ic.confidence)
+        x["lm_status"] = ic.status
+        enriched.append(x)
+    return JSONResponse({"ok": True, "slots": enriched})
 
 
 @app.post("/reference/save")
@@ -844,3 +1211,160 @@ async def recognize_reference_crops(
     )
 
     return JSONResponse(payload)
+
+
+@app.post("/compliance/check")
+async def check_planogram_compliance(request: Request) -> JSONResponse:
+    """
+    Шаг 3: сравнение выкладки с эталоном.
+    Ожидает JSON:
+    {
+      "reference_result_dir": "data/sku_results/reference/<run>",
+      "reference_planogram": {"slots":[...]},
+      "sku_catalog": {"items":[...]},
+      "options": {
+        "confidence_threshold": 0.62,
+        "llm_name_weight": 0.12,
+        "presence_weight": 0.4,
+        "position_weight": 0.35,
+        "facings_weight": 0.25,
+        "pass_threshold": 80
+      }
+    }
+    """
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "error": "JSON payload expected"}, status_code=400)
+
+    ref_dir = str(payload.get("reference_result_dir", "")).strip()
+    if not ref_dir:
+        return JSONResponse({"ok": False, "error": "reference_result_dir is required"}, status_code=400)
+
+    reference = _resolve_reference_record(ref_dir)
+    if reference is None:
+        return JSONResponse(
+            {"ok": False, "error": "reference_result_dir not found or has no positions"},
+            status_code=404,
+        )
+
+    try:
+        reference_planogram_payload = payload.get("reference_planogram", {})
+        sku_catalog_payload = payload.get("sku_catalog", {})
+        if not isinstance(reference_planogram_payload, dict) or not isinstance(sku_catalog_payload, dict):
+            raise ValueError("reference_planogram and sku_catalog must be objects")
+        reference_slots = parse_reference_planogram(reference_planogram_payload)
+        catalog = parse_sku_catalog(sku_catalog_payload)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    opts = payload.get("options", {})
+    if not isinstance(opts, dict):
+        opts = {}
+    confidence_threshold = float(opts.get("confidence_threshold", 0.62) or 0.62)
+    llm_name_weight = float(opts.get("llm_name_weight", 0.12) or 0.12)
+    presence_weight = float(opts.get("presence_weight", 0.4) or 0.4)
+    position_weight = float(opts.get("position_weight", 0.35) or 0.35)
+    facings_weight = float(opts.get("facings_weight", 0.25) or 0.25)
+    pass_threshold = float(opts.get("pass_threshold", 80.0) or 80.0)
+
+    ref_base = _result_dir_to_project_path(str(reference.get("result_dir", "")))
+    positions_src = reference.get("reference_positions", {}).get("positions", [])
+    if not isinstance(positions_src, list) or not positions_src:
+        return JSONResponse({"ok": False, "error": "No positions in reference_result_dir"}, status_code=400)
+
+    try:
+        ref_embeddings = build_reference_embeddings(catalog, base_dir=BASE_DIR)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    similar_groups = infer_similar_sku_groups(catalog)
+
+    with Image.open(ref_base / "input.jpg") as src:
+        full_img = ImageOps.exif_transpose(src)
+        if full_img.mode != "RGB":
+            full_img = full_img.convert("RGB")
+        full_img = full_img.copy()
+
+    observed_positions: list[dict[str, Any]] = []
+    for pos in positions_src:
+        if not isinstance(pos, dict):
+            continue
+        idx = int(pos.get("index", 0) or 0)
+        shelf_id = int(pos.get("shelf_id", 0) or 0)
+        position_in_shelf = int(pos.get("position_in_shelf", 0) or 0)
+        bbox_ref = pos.get("bbox")
+        if not isinstance(bbox_ref, dict):
+            continue
+        box = _bbox_to_int_crop(bbox_ref, full_img.width, full_img.height)
+        if not box:
+            continue
+        crop = full_img.crop(box)
+        llm_hint = str(pos.get("lm_item_name", "")).strip()
+        m = match_sku_for_crop(
+            crop,
+            catalog,
+            ref_embeddings,
+            confidence_threshold=confidence_threshold,
+            similar_groups=similar_groups,
+            llm_name_hint=llm_hint,
+            llm_name_weight=llm_name_weight,
+        )
+        observed_positions.append(
+            {
+                "index": idx,
+                "shelf_id": shelf_id,
+                "position_in_shelf": position_in_shelf,
+                "bbox": bbox_ref,
+                "predicted_sku_id": m["predicted_sku_id"],
+                "predicted_name": m["predicted_name"],
+                "confidence": m["confidence"],
+                "top_k": m["top_k"],
+                "status": m["status"],
+                "observed_facings": 1,
+            }
+        )
+
+    observed_runs = build_observed_planogram(observed_positions)
+    by_slot_run = {(int(r["shelf_id"]), int(r["slot_index"])): r for r in observed_runs}
+    for p in observed_positions:
+        k = (int(p.get("shelf_id", 0)), int(p.get("position_in_shelf", 0)))
+        p["observed_facings"] = int(by_slot_run.get(k, {}).get("observed_facings", 1))
+
+    metrics = compare_planograms_step3(
+        reference_slots=reference_slots,
+        observed_positions=observed_positions,
+        presence_weight=presence_weight,
+        position_weight=position_weight,
+        facings_weight=facings_weight,
+    )
+    uncertainty_flags = collect_uncertainty_flags(
+        observed_positions,
+        confidence_threshold=confidence_threshold,
+    )
+    score = float(metrics["compliance_score"])
+    result = {
+        "ok": True,
+        "reference_result_dir": str(reference.get("result_dir", "")),
+        "compliance_score": score,
+        "status": pass_fail_from_score(score, pass_threshold),
+        "metrics": {
+            "presence_ratio": metrics["presence_ratio"],
+            "position_ratio": metrics["position_ratio"],
+            "facings_ratio": metrics["facings_ratio"],
+        },
+        "deviations": metrics["deviations"],
+        "uncertainty_flags": uncertainty_flags,
+        "observed_positions": observed_positions,
+    }
+    return JSONResponse(result)
+
+
+@app.post("/compliance/calibrate")
+async def calibrate_compliance(request: Request) -> JSONResponse:
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "error": "JSON payload expected"}, status_code=400)
+    labeled_samples = payload.get("labeled_samples", [])
+    if not isinstance(labeled_samples, list):
+        return JSONResponse({"ok": False, "error": "labeled_samples must be list"}, status_code=400)
+    baseline = calibrate_thresholds_and_weights(labeled_samples)
+    return JSONResponse({"ok": True, "baseline": baseline})

@@ -1,4 +1,4 @@
-﻿# Merch Analyzer
+# Merch Analyzer
 
 Веб-приложение на **FastAPI** для разбора фото полки с напитками: детекция позиций (**SKU110K** / RetinaNet), сохранение кропов и опциональное распознавание названий через **LM Studio** (OpenAI-совместимый vision API).
 
@@ -11,6 +11,7 @@
 
 - **Шаг 1 — разбор эталона** (`POST /reference/save`): загрузка фото → детекция боксов SKU110K → сохранение `input.jpg`, кропов, разметки с полками (оценка рядов по вертикали bbox) → `result.json` и запись в `data/reference_by_sku.json`.
 - **Шаг 2 — распознавание** (`POST /recognize`): кропы из выбранного разбора → LM Studio (`/v1/chat/completions`) → подписи на изображении, `annotated_lm.jpg`, отдельный прогон в `data/sku_results/lm_recognition/`.
+- **Шаг 3 — соответствие эталону** (`POST /compliance/check`): visual matching SKU по каталогу референсных фото + сравнение с эталонной планограммой (presence/position/facings) → `compliance_score` и объяснимые `deviations`.
 - **Режимы LM**: по умолчанию пакетный запрос (`LM_BATCH_CLASSIFY_SINGLE_REQUEST=true`, `classify_crops_batch_chunked`); иначе по одному кропу, или один запрос на кластер похожих кропов (`LM_SHARED_CLASSIFY_PER_SIMILARITY_GROUP` + `SIMILARITY_THRESHOLD`).
 - **Вспомогательные модули** (для тестов и дальнейшей интеграции): `app/planogram.py`, `planogram_compare.py`, `planogram_store.py`, `item_validation.py` (каталог, fuzzy-сопоставление — см. код и `tests/`).
 
@@ -112,6 +113,8 @@ merch_analyzer/
 | GET | `/reference/{sku}`, `/reference/history/{sku}` | последний / история по ключу |
 | GET | `/reference-folder/history` | история с диска |
 | POST | `/recognize` | LM по кропам выбранного `reference_result_dir` |
+| POST | `/compliance/check` | шаг 3: score соответствия планограмме + причины отклонений |
+| POST | `/compliance/calibrate` | baseline-калибровка порогов и весов на размеченных примерах |
 | GET | `/lm-recognition/history` | сохранённые прогоны шага 2 |
 | GET | `/result-file/{category}/{run_id}/{path}` | раздача файлов из `data/sku_results/` |
 
@@ -140,6 +143,34 @@ merch_analyzer/
 ## LM Studio
 
 Клиент обращается к `POST {LMSTUDIO_URL}/v1/chat/completions`. Формат ответа модели для одиночного кропа: одна строка вида `Напиток: …` или `Ничего не обнаружено` (см. системный промпт в `app/lmstudio_client.py`). При ошибке сети или непарсируемом ответе позиция получает `unknown` / статус ошибки, **детекция SKU110K при этом не ломается**.
+
+## Шаг 3: контракт запроса (`/compliance/check`)
+
+Минимальный JSON:
+
+```json
+{
+  "reference_result_dir": "data/sku_results/reference/20260423_123000_store",
+  "reference_planogram": {
+    "slots": [
+      {"shelf_id": 1, "slot_index": 1, "expected_sku_id": "sku_101", "expected_facings": 2},
+      {"shelf_id": 1, "slot_index": 2, "expected_sku_id": "sku_205", "expected_facings": 1}
+    ]
+  },
+  "sku_catalog": {
+    "items": [
+      {
+        "sku_id": "sku_101",
+        "canonical_name": "Brand Cola 0.5",
+        "aliases": ["Brand Cola Classic 0.5"],
+        "reference_images": ["img/catalog/sku_101_front.jpg"]
+      }
+    ]
+  }
+}
+```
+
+Ответ включает `compliance_score` (0..100), `status` (`pass`/`fail`), `deviations[]`, `uncertainty_flags[]`.
 
 ## Тесты
 

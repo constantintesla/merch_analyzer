@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
@@ -55,18 +55,25 @@
     }
     .row { display: grid; grid-template-columns: 1fr; gap: 8px; }
     label { display: block; font-size: 13px; margin-bottom: 4px; color: #415172; font-weight: 600; }
-    input, button, select {
+    input, button, select, textarea {
       width: 100%;
       padding: 10px 12px;
       border-radius: 10px;
       border: 1px solid var(--border-soft);
       transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
     }
-    input, select {
+    input, select, textarea {
       background: #fff;
       color: var(--text-main);
     }
-    input:focus, select:focus {
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    input:focus, select:focus, textarea:focus {
       outline: none;
       border-color: var(--primary);
       box-shadow: 0 0 0 3px rgba(53, 109, 255, 0.2);
@@ -240,6 +247,7 @@
       <div class="card">
         <h1>Анализ товаров</h1>
         <p class="hint">Каталог разметок: <code>{{ reference_db_path }}</code><br>Результаты: <code>{{ sku_results_dir }}</code></p>
+        <p><a href="/planogram/editor" style="color:#245aeb;font-weight:600;text-decoration:none">Открыть экран редактора эталонных позиций и планограммы →</a></p>
       </div>
 
       <div class="card">
@@ -302,6 +310,60 @@
           </div>
         </div>
       </div>
+
+      <div class="card">
+        <h2>Шаг 3: Проверка соответствия эталону</h2>
+        <p class="hint">Сравнение по <code>presence/position/facings</code> с explainable-отчётом по отклонениям.</p>
+        <form id="complianceForm">
+          <div class="row">
+            <div>
+              <label for="complianceReferenceResultDir">Сохранённый разбор (шаг 1)</label>
+              <select id="complianceReferenceResultDir" required>
+                <option value="" disabled selected>Выберите сохранённый разбор</option>
+              </select>
+            </div>
+            <div>
+              <label for="compliancePassThreshold">Порог pass/fail</label>
+              <input id="compliancePassThreshold" type="number" min="0" max="100" step="1" value="80">
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="referencePlanogramJson">Эталонная планограмма (JSON)</label>
+              <textarea id="referencePlanogramJson" spellcheck="false"></textarea>
+            </div>
+            <div>
+              <label for="skuCatalogJson">Каталог SKU (JSON)</label>
+              <textarea id="skuCatalogJson" spellcheck="false"></textarea>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="complianceConfidenceThreshold">Confidence threshold</label>
+              <input id="complianceConfidenceThreshold" type="number" min="0" max="1" step="0.01" value="0.62">
+            </div>
+            <div>
+              <label for="complianceLlmNameWeight">Вес текстового hint (LLM)</label>
+              <input id="complianceLlmNameWeight" type="number" min="0" max="1" step="0.01" value="0.12">
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="presenceWeight">presence_weight</label>
+              <input id="presenceWeight" type="number" min="0" max="1" step="0.01" value="0.40">
+            </div>
+            <div>
+              <label for="positionWeight">position_weight</label>
+              <input id="positionWeight" type="number" min="0" max="1" step="0.01" value="0.35">
+            </div>
+            <div>
+              <label for="facingsWeight">facings_weight</label>
+              <input id="facingsWeight" type="number" min="0" max="1" step="0.01" value="0.25">
+            </div>
+          </div>
+          <p><button type="submit">Проверить соответствие</button></p>
+        </form>
+      </div>
     </div>
 
     <div class="right-col">
@@ -324,6 +386,11 @@
         </div>
         <h4 id="cropsSectionTitle">Кропы позиций</h4>
         <div id="refCrops" class="img-grid"></div>
+      </div>
+
+      <div class="card">
+        <h3>Шаг 3: Результат соответствия</h3>
+        <div id="complianceResult" class="muted">Запустите проверку шага 3.</div>
       </div>
 
       <div class="card">
@@ -382,6 +449,34 @@
       const payload = await resp.json();
       output.textContent = JSON.stringify(payload, null, 2);
       return payload;
+    }
+
+    function prettyJsonOrDefault(targetId, valueObj) {
+      document.getElementById(targetId).value = JSON.stringify(valueObj, null, 2);
+    }
+
+    function renderComplianceResult(payload) {
+      const node = document.getElementById("complianceResult");
+      if (!payload || !payload.ok) {
+        node.innerHTML = `<span style="color:#9f1239">Ошибка: ${escapeHtml(payload?.error || "Неизвестная ошибка")}</span>`;
+        return;
+      }
+      const deviations = Array.isArray(payload.deviations) ? payload.deviations : [];
+      const uncertainty = Array.isArray(payload.uncertainty_flags) ? payload.uncertainty_flags : [];
+      const m = payload.metrics || {};
+      const topDev = deviations.slice(0, 8).map((d) => {
+        const loc = `полка ${d.shelf_id || 0}, слот ${d.slot_index || 0}`;
+        const exp = d.expected?.sku_id || "—";
+        const act = d.actual?.sku_id || "—";
+        return `• [${d.type}] ${loc}: ожидался ${exp}, факт ${act}`;
+      });
+      node.innerHTML =
+        `<div><b>Score:</b> ${Number(payload.compliance_score || 0).toFixed(2)} / 100 &nbsp;` +
+        `<b>Статус:</b> ${escapeHtml(payload.status || "—")}</div>` +
+        `<div style="margin-top:6px"><b>Метрики:</b> presence=${Number(m.presence_ratio || 0).toFixed(3)}, ` +
+        `position=${Number(m.position_ratio || 0).toFixed(3)}, facings=${Number(m.facings_ratio || 0).toFixed(3)}</div>` +
+        `<div style="margin-top:6px"><b>Отклонений:</b> ${deviations.length}, <b>Uncertainty:</b> ${uncertainty.length}</div>` +
+        `${topDev.length ? `<div style="margin-top:8px; white-space:pre-wrap">${escapeHtml(topDev.join("\n"))}</div>` : ""}`;
     }
 
     function escapeHtml(s) {
@@ -556,7 +651,9 @@
 
     async function loadHistoryForSku(markupName) {
       const select = document.getElementById("referenceResultDir");
+      const complianceSelect = document.getElementById("complianceReferenceResultDir");
       select.innerHTML = '<option value="" disabled selected>Выберите сохранённый разбор</option>';
+      complianceSelect.innerHTML = '<option value="" disabled selected>Выберите сохранённый разбор</option>';
       const trimmed = (markupName || "").trim();
       const url = trimmed
         ? `/reference-folder/history?sku=${encodeURIComponent(trimmed)}`
@@ -570,6 +667,10 @@
         opt.textContent =
           `«${item.sku || "—"}» · ${item.reference_filename || "photo"} · позиций: ${item.positions_count || 0}`;
         select.appendChild(opt);
+        const opt2 = document.createElement("option");
+        opt2.value = rd;
+        opt2.textContent = opt.textContent;
+        complianceSelect.appendChild(opt2);
       });
     }
 
@@ -667,8 +768,85 @@
       await loadLmRecognitionHistory(name);
     });
 
+    function buildCompliancePayload() {
+      const referenceResultDir = (document.getElementById("complianceReferenceResultDir").value || "").trim();
+      const planRaw = (document.getElementById("referencePlanogramJson").value || "").trim();
+      const catRaw = (document.getElementById("skuCatalogJson").value || "").trim();
+      if (!referenceResultDir) throw new Error("Выберите сохранённый разбор шага 1");
+      if (!planRaw) throw new Error("Заполните JSON эталонной планограммы");
+      if (!catRaw) throw new Error("Заполните JSON каталога SKU");
+      let referencePlanogram;
+      let skuCatalog;
+      try {
+        referencePlanogram = JSON.parse(planRaw);
+      } catch (_e) {
+        throw new Error("reference_planogram: некорректный JSON");
+      }
+      try {
+        skuCatalog = JSON.parse(catRaw);
+      } catch (_e) {
+        throw new Error("sku_catalog: некорректный JSON");
+      }
+      return {
+        reference_result_dir: referenceResultDir,
+        reference_planogram: referencePlanogram,
+        sku_catalog: skuCatalog,
+        options: {
+          confidence_threshold: Number(document.getElementById("complianceConfidenceThreshold").value || 0.62),
+          llm_name_weight: Number(document.getElementById("complianceLlmNameWeight").value || 0.12),
+          presence_weight: Number(document.getElementById("presenceWeight").value || 0.4),
+          position_weight: Number(document.getElementById("positionWeight").value || 0.35),
+          facings_weight: Number(document.getElementById("facingsWeight").value || 0.25),
+          pass_threshold: Number(document.getElementById("compliancePassThreshold").value || 80),
+        },
+      };
+    }
+
+    document.getElementById("complianceForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      let payload;
+      try {
+        payload = buildCompliancePayload();
+      } catch (err) {
+        const fail = { ok: false, error: err?.message || "Некорректные входные данные" };
+        output.textContent = JSON.stringify(fail, null, 2);
+        renderComplianceResult(fail);
+        return;
+      }
+      const resp = await fetch("/compliance/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await resp.json();
+      output.textContent = JSON.stringify(body, null, 2);
+      renderComplianceResult(body);
+    });
+
     setupPreviewZoomFollow();
 
+    prettyJsonOrDefault("referencePlanogramJson", {
+      slots: [
+        { shelf_id: 1, slot_index: 1, expected_sku_id: "sku_101", expected_facings: 2 },
+        { shelf_id: 1, slot_index: 2, expected_sku_id: "sku_205", expected_facings: 1 }
+      ]
+    });
+    prettyJsonOrDefault("skuCatalogJson", {
+      items: [
+        {
+          sku_id: "sku_101",
+          canonical_name: "Brand Cola 0.5",
+          aliases: ["Brand Cola Classic 0.5"],
+          reference_images: ["img/catalog/sku_101_front.jpg"]
+        },
+        {
+          sku_id: "sku_205",
+          canonical_name: "Brand Zero 0.5",
+          aliases: [],
+          reference_images: ["img/catalog/sku_205_front.jpg"]
+        }
+      ]
+    });
     loadHistoryForReferenceSku();
     loadHistoryForSku("");
     loadLmRecognitionHistory("");

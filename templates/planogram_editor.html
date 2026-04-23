@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Planogram Editor</title>
+  <style>
+    html, body { width: 100%; height: 100%; }
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #f5f7ff; color: #1f2a44; }
+    .page {
+      width: 100%;
+      min-height: 100vh;
+      margin: 0;
+      padding: 12px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
+      gap: 12px;
+      min-height: calc(100vh - 110px);
+      align-items: start;
+    }
+    .card { background: #fff; border: 1px solid #dbe3f4; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+    label { display: block; font-size: 13px; margin: 6px 0 4px; font-weight: 600; }
+    input, button, textarea, select { width: 100%; padding: 9px; border: 1px solid #cfd9ef; border-radius: 8px; }
+    textarea { min-height: 130px; resize: vertical; font-family: Consolas, "Courier New", monospace; font-size: 12px; }
+    button { cursor: pointer; color: #fff; border: none; background: #356dff; font-weight: 600; }
+    button:hover { background: #245aeb; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border: 1px solid #dbe3f4; padding: 6px; vertical-align: top; }
+    th { background: #eef3ff; text-align: left; }
+    .hint { font-size: 12px; color: #5f6f92; }
+    .canvas-wrap {
+      border: 1px solid #cfd9ef;
+      border-radius: 10px;
+      background: #fff;
+      overflow: auto;
+      min-height: calc(100vh - 220px);
+      max-height: calc(100vh - 220px);
+    }
+    canvas { display: block; max-width: none; height: auto; cursor: crosshair; }
+    .toolbar { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+    .status { margin-top: 8px; font-size: 13px; white-space: pre-wrap; }
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 1200;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(8, 18, 45, 0.45);
+    }
+    .modal-card {
+      width: min(520px, 96vw);
+      max-height: 92vh;
+      overflow: auto;
+      background: #fff;
+      border: 1px solid #dbe3f4;
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .modal-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 10px; }
+    @media (max-width: 1100px) {
+      .row { grid-template-columns: 1fr; min-height: auto; }
+      .canvas-wrap { min-height: 60vh; max-height: 60vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="card">
+      <h2 style="margin:0 0 6px 0">Экран 1: добавление эталонных позиций и планограммы</h2>
+      <div class="hint">Загрузите обработанное фото, выделите зоны товара, отредактируйте названия/SKU и сохраните планограмму.</div>
+    </div>
+
+    <div class="row">
+      <div>
+        <div class="card">
+          <label for="planogramName">Название планограммы</label>
+          <input id="planogramName" placeholder="Например, Магазин_А_полка_1">
+
+          <label for="sourceImage">Обработанное фото</label>
+          <input id="sourceImage" type="file" accept="image/*">
+          <div class="hint">Выделение: зажмите ЛКМ и протяните прямоугольник. Превью отображает исходное изображение в исходном размере.</div>
+
+          <div class="toolbar">
+            <button type="button" id="undoBtn">Удалить последнюю зону</button>
+            <button type="button" id="clearBtn">Очистить все зоны</button>
+          </div>
+          <div class="toolbar">
+            <button type="button" id="autonumberBtn">Перенумеровать слоты</button>
+            <button type="button" id="saveBtn">Сохранить планограмму</button>
+          </div>
+          <div class="toolbar">
+            <button type="button" id="detectSkuBtn">Обработать через SKU110K</button>
+            <button type="button" id="enrichLmBtn">Распознать названия через LM Studio</button>
+          </div>
+          <div class="toolbar">
+            <button type="button" id="useAnnotatedBtn">Показать annotated SKU110K</button>
+            <button type="button" id="deleteModeBtn">Режим: добавление зон</button>
+          </div>
+          <div class="toolbar">
+            <button type="button" id="loadListBtn">Обновить список сохраненных</button>
+            <select id="savedSelect"><option value="">Выберите сохраненную</option></select>
+          </div>
+          <div class="toolbar">
+            <button type="button" id="deletePlanogramBtn" style="background:#b91c1c">Удалить выбранную планограмму</button>
+            <div></div>
+          </div>
+          <div class="status" id="statusBox">Ожидание действий...</div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin-top:0">JSON для шага 3</h3>
+          <label for="referencePlanogramOut">reference_planogram</label>
+          <textarea id="referencePlanogramOut" readonly></textarea>
+          <label for="skuCatalogOut">sku_catalog (черновик)</label>
+          <textarea id="skuCatalogOut" readonly></textarea>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <div class="canvas-wrap">
+            <canvas id="editorCanvas" width="1100" height="640"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-top:0">Позиции</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Полка</th>
+                <th>Слот</th>
+                <th>Название</th>
+                <th>SKU ID</th>
+                <th>Facings</th>
+                <th>Идеальное фото</th>
+                <th>Действие</th>
+              </tr>
+            </thead>
+            <tbody id="slotsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="slotModal" class="modal" aria-hidden="true">
+    <div class="modal-card">
+      <h3 id="slotModalTitle" style="margin:0 0 8px 0">Редактирование позиции</h3>
+      <div class="modal-grid">
+        <div>
+          <label for="slotShelfInput">Полка</label>
+          <input id="slotShelfInput" type="number" min="1">
+        </div>
+        <div>
+          <label for="slotIndexInput">Слот</label>
+          <input id="slotIndexInput" type="number" min="1">
+        </div>
+        <div>
+          <label for="slotNameInput">Название</label>
+          <input id="slotNameInput">
+        </div>
+        <div>
+          <label for="slotSkuInput">SKU ID</label>
+          <input id="slotSkuInput">
+        </div>
+        <div>
+          <label for="slotFacingsInput">Facings</label>
+          <input id="slotFacingsInput" type="number" min="1">
+        </div>
+        <div>
+          <label for="slotIdealInput">Идеальное фото</label>
+          <input id="slotIdealInput" type="file" accept="image/*">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="slotModalSaveBtn">Сохранить</button>
+        <button type="button" id="slotModalDeleteBtn" style="background:#b91c1c">Удалить</button>
+        <button type="button" id="slotModalCloseBtn" style="background:#475569">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("editorCanvas");
+    const ctx = canvas.getContext("2d");
+    const statusBox = document.getElementById("statusBox");
+    const slotsBody = document.getElementById("slotsBody");
+    const sourceImage = document.getElementById("sourceImage");
+    const planogramName = document.getElementById("planogramName");
+
+    let img = null;
+    let imgFile = null;
+    let drawStart = null;
+    let drawCurrent = null;
+    let slots = [];
+    let annotatedPreviewUrl = "";
+    let deleteMode = false;
+    let activeSlotIndex = -1;
+
+    function setStatus(text, isErr=false) {
+      statusBox.style.color = isErr ? "#9f1239" : "#1f2a44";
+      statusBox.textContent = text;
+    }
+
+    function canvasPos(evt) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (evt.clientX - rect.left) * (canvas.width / rect.width);
+      const y = (evt.clientY - rect.top) * (canvas.height / rect.height);
+      return { x: Math.max(0, Math.min(canvas.width, x)), y: Math.max(0, Math.min(canvas.height, y)) };
+    }
+
+    function setCanvasToImageSize(imageObj) {
+      const w = Math.max(1, imageObj.naturalWidth || imageObj.width || 1);
+      const h = Math.max(1, imageObj.naturalHeight || imageObj.height || 1);
+      canvas.width = w;
+      canvas.height = h;
+    }
+
+    function rectFromPoints(a, b) {
+      const x1 = Math.min(a.x, b.x), y1 = Math.min(a.y, b.y);
+      const x2 = Math.max(a.x, b.x), y2 = Math.max(a.y, b.y);
+      return { x1, y1, x2, y2 };
+    }
+
+    function findSlotAtPoint(p) {
+      for (let i = slots.length - 1; i >= 0; i -= 1) {
+        const b = slots[i].bbox_px;
+        if (!b) continue;
+        if (p.x >= b.x1 && p.x <= b.x2 && p.y >= b.y1 && p.y <= b.y2) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    function openSlotModal(index) {
+      if (index < 0 || index >= slots.length) return;
+      activeSlotIndex = index;
+      const s = slots[index];
+      document.getElementById("slotModalTitle").textContent = `Редактирование позиции #${index + 1}`;
+      document.getElementById("slotShelfInput").value = String(s.shelf_id || 1);
+      document.getElementById("slotIndexInput").value = String(s.slot_index || 1);
+      document.getElementById("slotNameInput").value = String(s.item_name || "");
+      document.getElementById("slotSkuInput").value = String(s.sku_id || "");
+      document.getElementById("slotFacingsInput").value = String(s.expected_facings || 1);
+      document.getElementById("slotIdealInput").value = "";
+      const m = document.getElementById("slotModal");
+      m.style.display = "flex";
+      m.setAttribute("aria-hidden", "false");
+    }
+
+    function closeSlotModal() {
+      activeSlotIndex = -1;
+      const m = document.getElementById("slotModal");
+      m.style.display = "none";
+      m.setAttribute("aria-hidden", "true");
+    }
+
+    function drawCanvas() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (img) {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      } else {
+        ctx.fillStyle = "#eef3ff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#4f5f84";
+        ctx.fillText("Загрузите фото, чтобы начать разметку", 20, 28);
+      }
+      slots.forEach((s, idx) => {
+        const b = s.bbox_px;
+        ctx.strokeStyle = "#2563eb";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+        ctx.fillStyle = "rgba(37,99,235,0.12)";
+        ctx.fillRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+        ctx.fillStyle = "#1e3a8a";
+        ctx.font = "12px Segoe UI";
+        ctx.fillText(`#${idx + 1} P${s.shelf_id}:${s.slot_index} ${s.sku_id}`, b.x1 + 4, Math.max(12, b.y1 + 14));
+      });
+      if (drawStart && drawCurrent) {
+        const b = rectFromPoints(drawStart, drawCurrent);
+        ctx.strokeStyle = "#dc2626";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+        ctx.setLineDash([]);
+      }
+    }
+
+    function refreshSlotsTable() {
+      slotsBody.innerHTML = "";
+      slots.forEach((s, idx) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${idx + 1}</td>
+          <td><input data-k="shelf_id" data-i="${idx}" type="number" min="1" value="${s.shelf_id}"></td>
+          <td><input data-k="slot_index" data-i="${idx}" type="number" min="1" value="${s.slot_index}"></td>
+          <td><input data-k="item_name" data-i="${idx}" value="${s.item_name}"></td>
+          <td><input data-k="sku_id" data-i="${idx}" value="${s.sku_id}"></td>
+          <td><input data-k="expected_facings" data-i="${idx}" type="number" min="1" value="${s.expected_facings}"></td>
+          <td>
+            <input data-k="ideal_image" data-i="${idx}" type="file" accept="image/*">
+            ${s.reference_image_url ? `<a href="${s.reference_image_url}" target="_blank">текущее фото</a>` : ""}
+          </td>
+          <td><button data-action="del" data-i="${idx}" type="button" style="background:#b91c1c">Удалить</button></td>
+        `;
+        slotsBody.appendChild(tr);
+      });
+      buildStep3Json();
+    }
+
+    function toNorm(b) {
+      return {
+        x1: Math.max(0, Math.min(1, b.x1 / canvas.width)),
+        y1: Math.max(0, Math.min(1, b.y1 / canvas.height)),
+        x2: Math.max(0, Math.min(1, b.x2 / canvas.width)),
+        y2: Math.max(0, Math.min(1, b.y2 / canvas.height)),
+      };
+    }
+
+    function buildStep3Json() {
+      const referencePlanogram = {
+        slots: slots.map((s) => ({
+          shelf_id: Number(s.shelf_id || 1),
+          slot_index: Number(s.slot_index || 1),
+          expected_sku_id: String(s.sku_id || ""),
+          expected_facings: Number(s.expected_facings || 1),
+        }))
+      };
+      const bySku = {};
+      slots.forEach((s) => {
+        const k = String(s.sku_id || "").trim();
+        if (!k) return;
+        if (!bySku[k]) {
+          bySku[k] = {
+            sku_id: k,
+            canonical_name: String(s.item_name || k),
+            aliases: [],
+            reference_images: s.reference_image_path ? [String(s.reference_image_path)] : []
+          };
+        } else if (s.reference_image_path) {
+          bySku[k].reference_images = bySku[k].reference_images || [];
+          if (!bySku[k].reference_images.includes(String(s.reference_image_path))) {
+            bySku[k].reference_images.push(String(s.reference_image_path));
+          }
+        }
+      });
+      const skuCatalog = { items: Object.values(bySku) };
+      document.getElementById("referencePlanogramOut").value = JSON.stringify(referencePlanogram, null, 2);
+      document.getElementById("skuCatalogOut").value = JSON.stringify(skuCatalog, null, 2);
+    }
+
+    function mapSlotsFromMetadata(metaSlots) {
+      return (metaSlots || []).map((s) => {
+        const b = s.bbox_norm || { x1: 0, y1: 0, x2: 0.1, y2: 0.1 };
+        return {
+          shelf_id: Number(s.shelf_id || 1),
+          slot_index: Number(s.slot_index || 1),
+          item_name: String(s.item_name || ""),
+          sku_id: String(s.sku_id || ""),
+          expected_facings: Number(s.expected_facings || 1),
+          reference_image_path: String(s.reference_image_path || ""),
+          reference_image_url: String(s.reference_image_url || ""),
+          bbox_norm: b,
+          bbox_px: {
+            x1: b.x1 * canvas.width,
+            y1: b.y1 * canvas.height,
+            x2: b.x2 * canvas.width,
+            y2: b.y2 * canvas.height,
+          },
+        };
+      });
+    }
+
+    function normalizeSlotsByGeometry() {
+      if (!slots.length) return;
+      slots.sort((a, b) => {
+        const ay = a.bbox_px?.y1 ?? 0;
+        const by = b.bbox_px?.y1 ?? 0;
+        const ax = a.bbox_px?.x1 ?? 0;
+        const bx = b.bbox_px?.x1 ?? 0;
+        return ay - by || ax - bx;
+      });
+      let currentShelf = 1;
+      let prevY = null;
+      let posInShelf = 0;
+      const rowThresholdPx = Math.max(24, Math.round(canvas.height * 0.04));
+      slots.forEach((s) => {
+        const y = s.bbox_px?.y1 ?? 0;
+        if (prevY == null || Math.abs(y - prevY) <= rowThresholdPx) {
+          posInShelf += 1;
+        } else {
+          currentShelf += 1;
+          posInShelf = 1;
+        }
+        prevY = y;
+        s.shelf_id = currentShelf;
+        s.slot_index = posInShelf;
+      });
+    }
+
+    sourceImage.addEventListener("change", () => {
+      const f = sourceImage.files?.[0];
+      if (!f) return;
+      imgFile = f;
+      annotatedPreviewUrl = "";
+      const url = URL.createObjectURL(f);
+      const loaded = new Image();
+      loaded.onload = () => {
+        img = loaded;
+        setCanvasToImageSize(loaded);
+        drawCanvas();
+      };
+      loaded.src = url;
+      setStatus("Фото загружено. Нарисуйте зоны на изображении.");
+    });
+
+    canvas.addEventListener("mousedown", (evt) => {
+      drawStart = canvasPos(evt);
+      drawCurrent = drawStart;
+      drawCanvas();
+    });
+    canvas.addEventListener("mousemove", (evt) => {
+      if (!drawStart) return;
+      drawCurrent = canvasPos(evt);
+      drawCanvas();
+    });
+    canvas.addEventListener("mouseup", (evt) => {
+      if (!drawStart) return;
+      drawCurrent = canvasPos(evt);
+      const b = rectFromPoints(drawStart, drawCurrent);
+      const clickPoint = { x: drawCurrent.x, y: drawCurrent.y };
+      drawStart = null;
+      drawCurrent = null;
+      if (deleteMode) {
+        const hit = findSlotAtPoint(clickPoint);
+        if (hit >= 0) {
+          slots.splice(hit, 1);
+          refreshSlotsTable();
+          drawCanvas();
+          setStatus("Позиция удалена кликом на фото.");
+        } else {
+          drawCanvas();
+          setStatus("В точке клика позиция не найдена.");
+        }
+        return;
+      }
+      if ((b.x2 - b.x1) < 8 || (b.y2 - b.y1) < 8) {
+        const hit = findSlotAtPoint(clickPoint);
+        if (hit >= 0) {
+          openSlotModal(hit);
+          drawCanvas();
+          return;
+        }
+        drawCanvas();
+        return;
+      }
+      const idx = slots.length + 1;
+      slots.push({
+        shelf_id: 1,
+        slot_index: idx,
+        item_name: `Позиция ${idx}`,
+        sku_id: `sku_${idx}`,
+        expected_facings: 1,
+        bbox_px: b,
+        bbox_norm: toNorm(b),
+      });
+      refreshSlotsTable();
+      drawCanvas();
+    });
+
+    slotsBody.addEventListener("input", (evt) => {
+      const el = evt.target;
+      if (!(el instanceof HTMLInputElement)) return;
+      const i = Number(el.dataset.i || -1);
+      const k = el.dataset.k || "";
+      if (i < 0 || i >= slots.length || !k) return;
+      if (k === "ideal_image") {
+        slots[i].ideal_file = el.files?.[0] || null;
+        return;
+      }
+      slots[i][k] = (k === "item_name" || k === "sku_id") ? el.value : Number(el.value || 0);
+      buildStep3Json();
+      drawCanvas();
+    });
+    slotsBody.addEventListener("click", (evt) => {
+      const el = evt.target;
+      if (!(el instanceof HTMLButtonElement)) return;
+      if (el.dataset.action !== "del") return;
+      const i = Number(el.dataset.i || -1);
+      if (i < 0 || i >= slots.length) return;
+      slots.splice(i, 1);
+      refreshSlotsTable();
+      drawCanvas();
+    });
+
+    document.getElementById("undoBtn").addEventListener("click", () => {
+      slots.pop();
+      refreshSlotsTable();
+      drawCanvas();
+    });
+    document.getElementById("clearBtn").addEventListener("click", () => {
+      slots = [];
+      refreshSlotsTable();
+      drawCanvas();
+    });
+    document.getElementById("autonumberBtn").addEventListener("click", () => {
+      slots.sort((a, b) => a.bbox_px.y1 - b.bbox_px.y1 || a.bbox_px.x1 - b.bbox_px.x1);
+      let shelf = 1, prevY = null, pos = 0;
+      slots.forEach((s, idx) => {
+        if (prevY == null || Math.abs(s.bbox_px.y1 - prevY) <= 50) {
+          pos += 1;
+        } else {
+          shelf += 1;
+          pos = 1;
+        }
+        prevY = s.bbox_px.y1;
+        s.shelf_id = shelf;
+        s.slot_index = pos;
+        if (!s.item_name || s.item_name.startsWith("Позиция ")) s.item_name = `Позиция ${idx + 1}`;
+      });
+      refreshSlotsTable();
+      drawCanvas();
+      setStatus("Слоты перенумерованы по геометрии (сверху-вниз, слева-направо).");
+    });
+
+    document.getElementById("saveBtn").addEventListener("click", async () => {
+      try {
+        if (!planogramName.value.trim()) throw new Error("Введите название планограммы");
+        if (!slots.length) throw new Error("Добавьте хотя бы одну зону");
+        const payloadSlots = slots.map((s) => ({
+          shelf_id: Number(s.shelf_id || 0),
+          slot_index: Number(s.slot_index || 0),
+          item_name: String(s.item_name || "").trim(),
+          sku_id: String(s.sku_id || "").trim(),
+          expected_facings: Number(s.expected_facings || 1),
+          bbox_norm: s.bbox_norm || toNorm(s.bbox_px),
+        }));
+        const fd = new FormData();
+        fd.append("name", planogramName.value.trim());
+        fd.append("slots_json", JSON.stringify(payloadSlots));
+        const uploadMap = [];
+        let uploadIndex = 0;
+        slots.forEach((s, i) => {
+          if (s.ideal_file) {
+            fd.append("ideal_images", s.ideal_file);
+            uploadMap.push({ slot_array_index: i, upload_index: uploadIndex });
+            uploadIndex += 1;
+          }
+        });
+        fd.append("ideal_images_map", JSON.stringify(uploadMap));
+        if (imgFile) fd.append("source_image", imgFile);
+        const resp = await fetch("/planogram/editor/save", { method: "POST", body: fd });
+        const body = await resp.json();
+        if (!body.ok) throw new Error(body.error || "Ошибка сохранения");
+        if (Array.isArray(body.metadata?.slots)) {
+          slots = mapSlotsFromMetadata(body.metadata.slots);
+          refreshSlotsTable();
+          drawCanvas();
+        }
+        setStatus(`Сохранено: ${body.planogram_id}`);
+        await loadSavedList();
+      } catch (err) {
+        setStatus(err?.message || "Ошибка", true);
+      }
+    });
+
+    document.getElementById("enrichLmBtn").addEventListener("click", async () => {
+      try {
+        if (!imgFile) throw new Error("Сначала загрузите исходное фото");
+        if (!slots.length) throw new Error("Нет позиций для распознавания");
+        const fd = new FormData();
+        fd.append("source_image", imgFile);
+        fd.append("slots_json", JSON.stringify(slots.map((s) => ({
+          shelf_id: Number(s.shelf_id || 1),
+          slot_index: Number(s.slot_index || 1),
+          item_name: String(s.item_name || ""),
+          sku_id: String(s.sku_id || ""),
+          expected_facings: Number(s.expected_facings || 1),
+          bbox_norm: s.bbox_norm || toNorm(s.bbox_px),
+          reference_image_path: s.reference_image_path || "",
+          reference_image_url: s.reference_image_url || "",
+        }))));
+        setStatus("LM Studio: распознаю названия...");
+        const resp = await fetch("/planogram/editor/enrich-lm", { method: "POST", body: fd });
+        const body = await resp.json();
+        if (!body.ok) throw new Error(body.error || "Ошибка LM Studio");
+        slots = (body.slots || []).map((s) => ({
+          ...s,
+          bbox_px: {
+            x1: (s.bbox_norm?.x1 || 0) * canvas.width,
+            y1: (s.bbox_norm?.y1 || 0) * canvas.height,
+            x2: (s.bbox_norm?.x2 || 0) * canvas.width,
+            y2: (s.bbox_norm?.y2 || 0) * canvas.height,
+          },
+        }));
+        refreshSlotsTable();
+        drawCanvas();
+        setStatus("LM Studio обновил названия. Проверьте и исправьте при необходимости.");
+      } catch (err) {
+        setStatus(err?.message || "Ошибка LM Studio", true);
+      }
+    });
+
+    document.getElementById("detectSkuBtn").addEventListener("click", async () => {
+      try {
+        if (!imgFile) throw new Error("Сначала загрузите исходное фото");
+        const fd = new FormData();
+        fd.append("source_image", imgFile);
+        setStatus("Запуск SKU110K, подождите...");
+        const resp = await fetch("/planogram/editor/detect-sku110k", { method: "POST", body: fd });
+        const body = await resp.json();
+        if (!body.ok) throw new Error(body.error || "Ошибка SKU110K");
+        annotatedPreviewUrl = body.visual?.annotated_url || "";
+        const detected = Array.isArray(body.slots) ? body.slots : [];
+        slots = detected.map((s) => {
+          const b = s.bbox_norm || { x1: 0, y1: 0, x2: 0.1, y2: 0.1 };
+          return {
+            shelf_id: Number(s.shelf_id || 1),
+            slot_index: Number(s.slot_index || 1),
+            item_name: String(s.item_name || ""),
+            sku_id: String(s.sku_id || ""),
+            expected_facings: Number(s.expected_facings || 1),
+            bbox_norm: b,
+            bbox_px: {
+              x1: b.x1 * canvas.width,
+              y1: b.y1 * canvas.height,
+              x2: b.x2 * canvas.width,
+              y2: b.y2 * canvas.height,
+            },
+          };
+        });
+        normalizeSlotsByGeometry();
+        refreshSlotsTable();
+        drawCanvas();
+        setStatus(`SKU110K: найдено ${slots.length} позиций. Проверьте названия и SKU перед сохранением.`);
+      } catch (err) {
+        setStatus(err?.message || "Ошибка SKU110K", true);
+      }
+    });
+
+    document.getElementById("useAnnotatedBtn").addEventListener("click", () => {
+      if (!annotatedPreviewUrl) {
+        setStatus("Сначала выполните SKU110K детекцию", true);
+        return;
+      }
+      const loaded = new Image();
+      loaded.onload = () => {
+        img = loaded;
+        setCanvasToImageSize(loaded);
+        drawCanvas();
+        setStatus("Показано annotated-изображение SKU110K.");
+      };
+      loaded.src = annotatedPreviewUrl;
+    });
+
+    document.getElementById("deleteModeBtn").addEventListener("click", () => {
+      deleteMode = !deleteMode;
+      document.getElementById("deleteModeBtn").textContent = deleteMode
+        ? "Режим: удаление кликом"
+        : "Режим: добавление зон";
+      setStatus(deleteMode ? "Удаление включено: клик по зоне удаляет позицию." : "Добавление зон включено.");
+    });
+
+    document.getElementById("slotModalSaveBtn").addEventListener("click", () => {
+      if (activeSlotIndex < 0 || activeSlotIndex >= slots.length) return;
+      const s = slots[activeSlotIndex];
+      s.shelf_id = Number(document.getElementById("slotShelfInput").value || 1);
+      s.slot_index = Number(document.getElementById("slotIndexInput").value || 1);
+      s.item_name = String(document.getElementById("slotNameInput").value || "").trim();
+      s.sku_id = String(document.getElementById("slotSkuInput").value || "").trim();
+      s.expected_facings = Number(document.getElementById("slotFacingsInput").value || 1);
+      const f = document.getElementById("slotIdealInput").files?.[0];
+      if (f) s.ideal_file = f;
+      refreshSlotsTable();
+      drawCanvas();
+      closeSlotModal();
+      setStatus("Позиция обновлена.");
+    });
+
+    document.getElementById("slotModalDeleteBtn").addEventListener("click", () => {
+      if (activeSlotIndex < 0 || activeSlotIndex >= slots.length) return;
+      slots.splice(activeSlotIndex, 1);
+      refreshSlotsTable();
+      drawCanvas();
+      closeSlotModal();
+      setStatus("Позиция удалена.");
+    });
+
+    document.getElementById("slotModalCloseBtn").addEventListener("click", closeSlotModal);
+    document.getElementById("slotModal").addEventListener("click", (e) => {
+      if (e.target?.id === "slotModal") closeSlotModal();
+    });
+
+    async function loadSavedList() {
+      const select = document.getElementById("savedSelect");
+      select.innerHTML = '<option value="">Выберите сохраненную</option>';
+      const resp = await fetch("/planogram/editor/list");
+      const body = await resp.json();
+      (body.items || []).forEach((it) => {
+        const opt = document.createElement("option");
+        opt.value = String(it.id || "");
+        const d = new Date(Number(it.created_at || 0) * 1000);
+        opt.textContent = `${it.name || "planogram"} · ${d.toLocaleString()}`;
+        select.appendChild(opt);
+      });
+    }
+
+    document.getElementById("loadListBtn").addEventListener("click", loadSavedList);
+    document.getElementById("deletePlanogramBtn").addEventListener("click", async () => {
+      try {
+        const select = document.getElementById("savedSelect");
+        const id = String(select.value || "").trim();
+        if (!id) throw new Error("Сначала выберите сохраненную планограмму");
+        const ok = window.confirm("Удалить выбранную планограмму без возможности восстановления?");
+        if (!ok) return;
+        const resp = await fetch(`/planogram/editor/${encodeURIComponent(id)}`, { method: "DELETE" });
+        const body = await resp.json();
+        if (!body.ok) throw new Error(body.error || "Ошибка удаления");
+        if (String(planogramName.value || "").trim() && select.options[select.selectedIndex]) {
+          planogramName.value = "";
+          slots = [];
+          drawCanvas();
+          refreshSlotsTable();
+        }
+        await loadSavedList();
+        setStatus(`Удалено: ${id}`);
+      } catch (err) {
+        setStatus(err?.message || "Ошибка удаления", true);
+      }
+    });
+    document.getElementById("savedSelect").addEventListener("change", async (e) => {
+      const id = e.target.value;
+      if (!id) return;
+      const resp = await fetch(`/planogram/editor/${encodeURIComponent(id)}`);
+      const body = await resp.json();
+      if (!body.ok) {
+        setStatus(body.error || "Не удалось загрузить", true);
+        return;
+      }
+      const metaSlots = Array.isArray(body.metadata?.slots) ? body.metadata.slots : [];
+      slots = mapSlotsFromMetadata(metaSlots);
+      normalizeSlotsByGeometry();
+      planogramName.value = body.planogram?.name || "";
+      if (body.planogram?.image_url) {
+        const loaded = new Image();
+        loaded.onload = () => {
+          img = loaded;
+          setCanvasToImageSize(loaded);
+          // После изменения размеров canvas пересчитываем bbox из нормализованных координат.
+          slots = mapSlotsFromMetadata(metaSlots);
+          normalizeSlotsByGeometry();
+          refreshSlotsTable();
+          drawCanvas();
+        };
+        loaded.src = body.planogram.image_url;
+      } else {
+        refreshSlotsTable();
+        drawCanvas();
+      }
+      setStatus(`Загружено: ${body.planogram?.name || id}`);
+    });
+
+    loadSavedList();
+    drawCanvas();
+  </script>
+</body>
+</html>
