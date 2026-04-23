@@ -16,6 +16,7 @@ from app.item_validation import normalize_name
 class SKUCatalogItem:
     sku_id: str
     canonical_name: str
+    brand: str
     aliases: list[str]
     reference_images: list[str]
 
@@ -43,6 +44,7 @@ def parse_sku_catalog(payload: dict[str, Any]) -> list[SKUCatalogItem]:
             raise ValueError(f"sku_catalog.items[{idx}] must be object")
         sku_id = str(row.get("sku_id", "")).strip()
         name = str(row.get("canonical_name", "")).strip()
+        brand = str(row.get("brand", "")).strip()
         aliases_raw = row.get("aliases", [])
         refs_raw = row.get("reference_images", [])
         if not sku_id or not name:
@@ -50,11 +52,20 @@ def parse_sku_catalog(payload: dict[str, Any]) -> list[SKUCatalogItem]:
         if sku_id in seen:
             raise ValueError(f"duplicate sku_id in catalog: {sku_id}")
         seen.add(sku_id)
+        if not brand:
+            normalized = normalize_name(name)
+            brand = normalized.split(" ")[0] if normalized and normalized != "unknown" else ""
         aliases = [str(x).strip() for x in aliases_raw if str(x).strip()] if isinstance(aliases_raw, list) else []
         refs = [str(x).strip() for x in refs_raw if str(x).strip()] if isinstance(refs_raw, list) else []
-        if not refs:
-            raise ValueError(f"sku_catalog.items[{idx}] requires at least one reference_images path")
-        out.append(SKUCatalogItem(sku_id=sku_id, canonical_name=name, aliases=aliases, reference_images=refs))
+        out.append(
+            SKUCatalogItem(
+                sku_id=sku_id,
+                canonical_name=name,
+                brand=brand,
+                aliases=aliases,
+                reference_images=refs,
+            )
+        )
     return out
 
 
@@ -126,6 +137,22 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / den)
 
 
+def score_crop_against_sku(
+    crop: Image.Image,
+    sku_id: str,
+    embeddings_by_sku: dict[str, list[np.ndarray]],
+) -> float:
+    """
+    Сходство кропа с «идеальной» позицией ожидаемого SKU.
+    Возвращает max cosine по референс-изображениям SKU в [0..1].
+    """
+    refs = embeddings_by_sku.get(str(sku_id), [])
+    if not refs:
+        return 0.0
+    emb = image_embedding(crop)
+    return float(max((_cosine(emb, v) for v in refs), default=0.0))
+
+
 def _name_similarity(hint: str, item: SKUCatalogItem) -> float:
     n_hint = normalize_name(hint)
     if n_hint == "unknown":
@@ -160,9 +187,8 @@ def build_reference_embeddings(
                 continue
             with Image.open(p) as src:
                 vectors.append(image_embedding(src))
-        if not vectors:
-            raise ValueError(f"catalog sku_id={item.sku_id} has no readable reference images")
-        out[item.sku_id] = vectors
+        if vectors:
+            out[item.sku_id] = vectors
     return out
 
 
@@ -200,6 +226,7 @@ def match_sku_for_crop(
     return {
         "predicted_sku_id": best_item.sku_id if accepted else "unknown",
         "predicted_name": best_item.canonical_name if accepted else "unknown",
+        "predicted_brand": best_item.brand if accepted else "",
         "confidence": float(best_score),
         "visual_score": float(best_visual),
         "status": "ok" if accepted else "unknown",
@@ -207,6 +234,7 @@ def match_sku_for_crop(
             {
                 "sku_id": c[0].sku_id,
                 "canonical_name": c[0].canonical_name,
+                "brand": c[0].brand,
                 "confidence": float(c[3]),
                 "visual_score": float(c[1]),
                 "visual_confidence": float(c[2]),
@@ -268,6 +296,9 @@ def compare_planograms_step3(
     presence_weight: float,
     position_weight: float,
     facings_weight: float,
+    catalog: list[SKUCatalogItem] | None = None,
+    matching_level: str = "sku_only",
+    foreign_sku_policy: str = "hard_fail",
 ) -> dict[str, Any]:
     expected_by_slot = {(s.shelf_id, s.slot_index): s for s in reference_slots}
     observed_by_slot: dict[tuple[int, int], dict[str, Any]] = {}
@@ -279,7 +310,11 @@ def compare_planograms_step3(
     matched_presence = 0
     matched_position = 0
     facings_score_sum = 0.0
+    brand_substitute_count = 0
+    foreign_brand_count = 0
+    info_only_deviation_count = 0
     deviations: list[dict[str, Any]] = []
+    sku_to_item = {item.sku_id: item for item in (catalog or [])}
 
     observed_slots_by_sku: dict[str, list[tuple[int, int]]] = {}
     for slot, item in observed_by_slot.items():
@@ -316,15 +351,47 @@ def compare_planograms_step3(
             found_elsewhere = slot_key not in observed_slots_by_sku.get(expected.sku_id, []) and bool(
                 observed_slots_by_sku.get(expected.sku_id)
             )
+            expected_item = sku_to_item.get(expected.sku_id)
+            actual_item = sku_to_item.get(actual_sku)
+            expected_brand = expected_item.brand if expected_item else ""
+            actual_brand = actual_item.brand if actual_item else ""
+            brand_match = bool(
+                matching_level == "brand_level" and expected_brand and actual_brand and expected_brand == actual_brand
+            )
+            deviation_type = "wrong_position" if found_elsewhere else "wrong_sku"
+            deviation_reason = "Expected SKU found on another slot" if found_elsewhere else "Different SKU in slot"
+            if not found_elsewhere and matching_level == "brand_level":
+                if brand_match:
+                    deviation_type = "brand_substitute"
+                    deviation_reason = "SKU differs but brand matches expected slot"
+                    brand_substitute_count += 1
+                else:
+                    deviation_type = "foreign_brand"
+                    deviation_reason = "Different manufacturer brand in expected slot"
+                    foreign_brand_count += 1
+
+            facings_ratio = min(observed_facings, expected.expected_facings) / max(observed_facings, expected.expected_facings)
+            if deviation_type in {"brand_substitute", "foreign_brand"} and foreign_sku_policy == "info_only":
+                matched_presence += 1
+                matched_position += 1
+                facings_score_sum += facings_ratio
+                info_only_deviation_count += 1
+            elif deviation_type == "brand_substitute" and foreign_sku_policy == "soft_substitute":
+                matched_presence += 1
+                matched_position += 0.5
+                facings_score_sum += facings_ratio * 0.5
             deviations.append(
                 {
-                    "type": "wrong_position" if found_elsewhere else "wrong_sku",
+                    "type": deviation_type,
                     "sku_id": expected.sku_id,
                     "shelf_id": expected.shelf_id,
                     "slot_index": expected.slot_index,
                     "expected": {"sku_id": expected.sku_id, "facings": expected.expected_facings},
                     "actual": {"sku_id": actual_sku, "facings": observed_facings},
-                    "reason": "Expected SKU found on another slot" if found_elsewhere else "Different SKU in slot",
+                    "expected_brand": expected_brand,
+                    "actual_brand": actual_brand,
+                    "brand_match": brand_match,
+                    "reason": deviation_reason,
                 }
             )
 
@@ -362,6 +429,9 @@ def compare_planograms_step3(
         "facings_ratio": facings_ratio,
         "compliance_score": float(max(0.0, min(100.0, score))),
         "deviations": deviations,
+        "brand_substitute_count": int(brand_substitute_count),
+        "foreign_brand_count": int(foreign_brand_count),
+        "info_only_deviation_count": int(info_only_deviation_count),
     }
 
 

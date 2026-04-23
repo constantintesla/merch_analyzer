@@ -73,6 +73,10 @@
     <div class="card">
       <h2 style="margin:0 0 6px 0">Экран 1: добавление эталонных позиций и планограммы</h2>
       <div class="hint">Загрузите обработанное фото, выделите зоны товара, отредактируйте названия/SKU и сохраните планограмму.</div>
+      <div class="toolbar" style="margin-top:12px;max-width:520px">
+        <button type="button" id="backToHomeBtn" style="background:#475569" onclick="window.location.href='/'">← Назад на главный экран</button>
+        <div></div>
+      </div>
     </div>
 
     <div class="row">
@@ -173,13 +177,17 @@
           <label for="slotFacingsInput">Facings</label>
           <input id="slotFacingsInput" type="number" min="1">
         </div>
-        <div>
+        <div style="grid-column: 1 / -1">
           <label for="slotIdealInput">Идеальное фото</label>
           <input id="slotIdealInput" type="file" accept="image/*">
+          <div id="slotIdealPreviewWrap" style="margin-top:8px;display:none">
+            <div class="hint" id="slotIdealStatusHint"></div>
+            <img id="slotIdealPreviewImg" alt="Идеальное фото" style="max-width:100%;max-height:160px;border-radius:8px;border:1px solid #dbe3f4;margin-top:6px;object-fit:contain;background:#f8fbff">
+          </div>
         </div>
       </div>
       <div class="modal-actions">
-        <button type="button" id="slotModalSaveBtn">Сохранить</button>
+        <button type="button" id="slotModalSaveBtn">Применить</button>
         <button type="button" id="slotModalDeleteBtn" style="background:#b91c1c">Удалить</button>
         <button type="button" id="slotModalCloseBtn" style="background:#475569">Закрыть</button>
       </div>
@@ -203,6 +211,9 @@
     let deleteMode = false;
     let activeSlotIndex = -1;
     let currentPlanogramId = "";
+    let slotModalOpenedAt = 0;
+    /** @type {HTMLElement | null} */
+    let slotModalReturnFocus = null;
 
     function setStatus(text, isErr=false) {
       statusBox.style.color = isErr ? "#9f1239" : "#1f2a44";
@@ -252,6 +263,21 @@
       return -1;
     }
 
+    function canonicalItemName(name) {
+      return String(name || "").toLowerCase().replace(/\s+/g, " ").trim();
+    }
+
+    function propagateIdealImageByName(sourceSlot) {
+      const key = canonicalItemName(sourceSlot?.item_name);
+      if (!key) return;
+      slots.forEach((s) => {
+        if (canonicalItemName(s.item_name) !== key) return;
+        if (sourceSlot.ideal_file) s.ideal_file = sourceSlot.ideal_file;
+        if (sourceSlot.reference_image_path) s.reference_image_path = sourceSlot.reference_image_path;
+        if (sourceSlot.reference_image_url) s.reference_image_url = sourceSlot.reference_image_url;
+      });
+    }
+
     function openSlotModal(index) {
       if (index < 0 || index >= slots.length) return;
       activeSlotIndex = index;
@@ -263,7 +289,24 @@
       document.getElementById("slotSkuInput").value = String(s.sku_id || "");
       document.getElementById("slotFacingsInput").value = String(s.expected_facings || 1);
       document.getElementById("slotIdealInput").value = "";
+      const wrap = document.getElementById("slotIdealPreviewWrap");
+      const prevImg = document.getElementById("slotIdealPreviewImg");
+      const hintEl = document.getElementById("slotIdealStatusHint");
+      const url = String(s.reference_image_url || "").trim();
+      if (url) {
+        wrap.style.display = "block";
+        prevImg.src = url;
+        hintEl.textContent = "Текущее сохранённое фото (можно заменить, выбрав файл выше).";
+      } else {
+        wrap.style.display = "none";
+        prevImg.removeAttribute("src");
+        hintEl.textContent = s.ideal_file ? "Выбран новый файл — нажмите «Применить», автосохранение выполнится автоматически." : "";
+      }
       const m = document.getElementById("slotModal");
+      slotModalOpenedAt = Date.now();
+      const aeOpen = document.activeElement;
+      slotModalReturnFocus = aeOpen instanceof HTMLElement ? aeOpen : null;
+      m.removeAttribute("inert");
       m.style.display = "flex";
       m.setAttribute("aria-hidden", "false");
     }
@@ -271,7 +314,26 @@
     function closeSlotModal() {
       activeSlotIndex = -1;
       const m = document.getElementById("slotModal");
+      const ae = document.activeElement;
+      const restore = slotModalReturnFocus;
+      slotModalReturnFocus = null;
+      const fallback = document.getElementById("saveBtn");
+      const focusTarget = (
+        restore &&
+        restore !== ae &&
+        !m.contains(restore) &&
+        document.contains(restore) &&
+        typeof restore.focus === "function"
+      )
+        ? restore
+        : (fallback instanceof HTMLElement ? fallback : null);
+      if (focusTarget && typeof focusTarget.focus === "function") {
+        focusTarget.focus({ preventScroll: true });
+      } else if (ae instanceof HTMLElement && m.contains(ae)) {
+        ae.blur();
+      }
       m.style.display = "none";
+      m.setAttribute("inert", "");
       m.setAttribute("aria-hidden", "true");
     }
 
@@ -335,6 +397,20 @@
         y1: Math.max(0, Math.min(1, b.y1 / canvas.height)),
         x2: Math.max(0, Math.min(1, b.x2 / canvas.width)),
         y2: Math.max(0, Math.min(1, b.y2 / canvas.height)),
+      };
+    }
+
+    /** Поля слота для API: всегда включаем пути идеального фото, иначе при сохранении они теряются. */
+    function slotJsonForServer(s) {
+      return {
+        shelf_id: Number(s.shelf_id || 0),
+        slot_index: Number(s.slot_index || 0),
+        item_name: String(s.item_name || "").trim(),
+        sku_id: String(s.sku_id || "").trim(),
+        expected_facings: Number(s.expected_facings || 1),
+        bbox_norm: s.bbox_norm || toNorm(s.bbox_px),
+        reference_image_path: String(s.reference_image_path || "").trim(),
+        reference_image_url: String(s.reference_image_url || "").trim(),
       };
     }
 
@@ -516,16 +592,28 @@
       drawCanvas();
     });
 
+    // Для type="file" надёжно срабатывает `change`, а не `input` (в частности в Firefox / части WebKit).
+    slotsBody.addEventListener("change", (evt) => {
+      const el = evt.target;
+      if (!(el instanceof HTMLInputElement)) return;
+      const i = Number(el.dataset.i || -1);
+      const k = el.dataset.k || "";
+      if (i < 0 || i >= slots.length || k !== "ideal_image") return;
+      slots[i].ideal_file = el.files?.[0] || null;
+      if (slots[i].ideal_file) {
+        propagateIdealImageByName(slots[i]);
+        refreshSlotsTable();
+        drawCanvas();
+      }
+    });
+
     slotsBody.addEventListener("input", (evt) => {
       const el = evt.target;
       if (!(el instanceof HTMLInputElement)) return;
       const i = Number(el.dataset.i || -1);
       const k = el.dataset.k || "";
       if (i < 0 || i >= slots.length || !k) return;
-      if (k === "ideal_image") {
-        slots[i].ideal_file = el.files?.[0] || null;
-        return;
-      }
+      if (k === "ideal_image") return;
       slots[i][k] = (k === "item_name" || k === "sku_id") ? el.value : Number(el.value || 0);
       if (k === "shelf_id" || k === "slot_index") {
         refreshSlotsTable();
@@ -573,14 +661,7 @@
         if (!planogramName.value.trim()) throw new Error("Введите название планограммы");
         if (!slots.length) throw new Error("Добавьте хотя бы одну зону");
         normalizeSlotsWithinShelves();
-        const payloadSlots = slots.map((s) => ({
-          shelf_id: Number(s.shelf_id || 0),
-          slot_index: Number(s.slot_index || 0),
-          item_name: String(s.item_name || "").trim(),
-          sku_id: String(s.sku_id || "").trim(),
-          expected_facings: Number(s.expected_facings || 1),
-          bbox_norm: s.bbox_norm || toNorm(s.bbox_px),
-        }));
+        const payloadSlots = slots.map(slotJsonForServer);
         const fd = new FormData();
         if (currentPlanogramId) fd.append("planogram_id", currentPlanogramId);
         fd.append("name", planogramName.value.trim());
@@ -618,16 +699,12 @@
         if (!slots.length) throw new Error("Нет позиций для распознавания");
         const fd = new FormData();
         fd.append("source_image", imgFile);
-        fd.append("slots_json", JSON.stringify(slots.map((s) => ({
-          shelf_id: Number(s.shelf_id || 1),
-          slot_index: Number(s.slot_index || 1),
-          item_name: String(s.item_name || ""),
-          sku_id: String(s.sku_id || ""),
-          expected_facings: Number(s.expected_facings || 1),
-          bbox_norm: s.bbox_norm || toNorm(s.bbox_px),
-          reference_image_path: s.reference_image_path || "",
-          reference_image_url: s.reference_image_url || "",
-        }))));
+        fd.append("slots_json", JSON.stringify(slots.map((s) => {
+          const o = slotJsonForServer(s);
+          o.shelf_id = Math.max(1, o.shelf_id);
+          o.slot_index = Math.max(1, o.slot_index);
+          return o;
+        })));
         setStatus("LM Studio: распознаю названия...");
         const resp = await fetch("/planogram/editor/enrich-lm", { method: "POST", body: fd });
         const body = await resp.json();
@@ -717,13 +794,18 @@
       s.item_name = String(document.getElementById("slotNameInput").value || "").trim();
       s.sku_id = String(document.getElementById("slotSkuInput").value || "").trim();
       s.expected_facings = Number(document.getElementById("slotFacingsInput").value || 1);
+      if (s.bbox_px) s.bbox_norm = toNorm(s.bbox_px);
       const f = document.getElementById("slotIdealInput").files?.[0];
       if (f) s.ideal_file = f;
+      if (f || s.reference_image_path || s.reference_image_url) {
+        propagateIdealImageByName(s);
+      }
       normalizeSlotsWithinShelves();
       refreshSlotsTable();
       drawCanvas();
       closeSlotModal();
-      setStatus("Позиция обновлена.");
+      setStatus("Позиция обновлена. Выполняю автосохранение...");
+      document.getElementById("saveBtn").click();
     });
 
     document.getElementById("slotModalDeleteBtn").addEventListener("click", () => {
@@ -737,7 +819,10 @@
 
     document.getElementById("slotModalCloseBtn").addEventListener("click", closeSlotModal);
     document.getElementById("slotModal").addEventListener("click", (e) => {
-      if (e.target?.id === "slotModal") closeSlotModal();
+      if (e.target?.id !== "slotModal") return;
+      // Защита от мгновенного закрытия тем же кликом, которым модалка открылась.
+      if (Date.now() - slotModalOpenedAt < 220) return;
+      closeSlotModal();
     });
 
     async function loadSavedList() {

@@ -10,6 +10,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from app.step3_compliance import (  # noqa: E402
+    SKUCatalogItem,
     build_observed_planogram,
     build_reference_embeddings,
     calibrate_thresholds_and_weights,
@@ -18,6 +19,7 @@ from app.step3_compliance import (  # noqa: E402
     match_sku_for_crop,
     parse_reference_planogram,
     parse_sku_catalog,
+    score_crop_against_sku,
 )
 
 
@@ -51,6 +53,23 @@ def test_parse_contracts() -> None:
     assert cat[0].sku_id == "sku_1"
 
 
+def test_parse_catalog_allows_missing_reference_images() -> None:
+    cat = parse_sku_catalog(
+        {
+            "items": [
+                {
+                    "sku_id": "sku_1",
+                    "canonical_name": "Cola Classic",
+                    "aliases": [],
+                    "reference_images": [],
+                }
+            ]
+        }
+    )
+    assert len(cat) == 1
+    assert cat[0].reference_images == []
+
+
 def test_visual_matching_prefers_closest_reference(tmp_path: Path) -> None:
     ref_red = tmp_path / "red.jpg"
     ref_green = tmp_path / "green.jpg"
@@ -81,6 +100,38 @@ def test_visual_matching_prefers_closest_reference(tmp_path: Path) -> None:
     assert out["top_k"][0]["sku_id"] == "red_sku"
     assert out["predicted_sku_id"] in {"red_sku", "unknown"}
     assert len(out["top_k"]) == 2
+
+
+def test_score_crop_against_expected_sku(tmp_path: Path) -> None:
+    ref_red = tmp_path / "red.jpg"
+    ref_green = tmp_path / "green.jpg"
+    _solid_image(ref_red, (220, 20, 20))
+    _solid_image(ref_green, (20, 180, 20))
+    catalog = parse_sku_catalog(
+        {
+            "items": [
+                {
+                    "sku_id": "red_sku",
+                    "canonical_name": "Red Bottle",
+                    "aliases": [],
+                    "reference_images": [str(ref_red)],
+                },
+                {
+                    "sku_id": "green_sku",
+                    "canonical_name": "Green Bottle",
+                    "aliases": [],
+                    "reference_images": [str(ref_green)],
+                },
+            ]
+        }
+    )
+    emb = build_reference_embeddings(catalog, base_dir=ROOT_DIR)
+    with Image.open(ref_red) as src:
+        crop = src.convert("RGB").copy()
+    red_score = score_crop_against_sku(crop, "red_sku", emb)
+    green_score = score_crop_against_sku(crop, "green_sku", emb)
+    assert red_score > green_score
+    assert 0.0 <= red_score <= 1.001
 
 
 def test_planogram_compare_score_and_deviations() -> None:
@@ -118,6 +169,74 @@ def test_planogram_compare_score_and_deviations() -> None:
     assert 0.0 <= report["compliance_score"] <= 100.0
     types = {d["type"] for d in report["deviations"]}
     assert "wrong_sku" in types
+
+
+def test_planogram_brand_level_info_only_foreign_brand_no_penalty() -> None:
+    reference = parse_reference_planogram(
+        {"slots": [{"shelf_id": 1, "slot_index": 1, "expected_sku_id": "sku_a", "expected_facings": 1}]}
+    )
+    observed = [
+        {
+            "index": 1,
+            "shelf_id": 1,
+            "position_in_shelf": 1,
+            "predicted_sku_id": "sku_x",
+            "observed_facings": 1,
+        }
+    ]
+    catalog: list[SKUCatalogItem] = [
+        SKUCatalogItem("sku_a", "Alpha Cola", "alpha", [], ["x.jpg"]),
+        SKUCatalogItem("sku_x", "Omega Soda", "omega", [], ["y.jpg"]),
+    ]
+    report = compare_planograms_step3(
+        reference_slots=reference,
+        observed_positions=observed,
+        presence_weight=0.4,
+        position_weight=0.35,
+        facings_weight=0.25,
+        catalog=catalog,
+        matching_level="brand_level",
+        foreign_sku_policy="info_only",
+    )
+    assert report["presence_ratio"] == 1.0
+    assert report["position_ratio"] == 1.0
+    assert report["facings_ratio"] == 1.0
+    assert report["compliance_score"] == 100.0
+    assert report["foreign_brand_count"] == 1
+    assert report["info_only_deviation_count"] == 1
+    assert {d["type"] for d in report["deviations"]} == {"foreign_brand"}
+
+
+def test_planogram_brand_level_marks_same_brand_substitute() -> None:
+    reference = parse_reference_planogram(
+        {"slots": [{"shelf_id": 1, "slot_index": 1, "expected_sku_id": "sku_a", "expected_facings": 1}]}
+    )
+    observed = [
+        {
+            "index": 1,
+            "shelf_id": 1,
+            "position_in_shelf": 1,
+            "predicted_sku_id": "sku_b",
+            "observed_facings": 1,
+        }
+    ]
+    catalog: list[SKUCatalogItem] = [
+        SKUCatalogItem("sku_a", "Brand Cola 0.5", "brand", [], ["x.jpg"]),
+        SKUCatalogItem("sku_b", "Brand Zero 0.5", "brand", [], ["y.jpg"]),
+    ]
+    report = compare_planograms_step3(
+        reference_slots=reference,
+        observed_positions=observed,
+        presence_weight=0.4,
+        position_weight=0.35,
+        facings_weight=0.25,
+        catalog=catalog,
+        matching_level="brand_level",
+        foreign_sku_policy="hard_fail",
+    )
+    assert report["brand_substitute_count"] == 1
+    assert {d["type"] for d in report["deviations"]} == {"brand_substitute"}
+    assert report["compliance_score"] < 100.0
 
 
 def test_observed_runs_and_uncertainty() -> None:

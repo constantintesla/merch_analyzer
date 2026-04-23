@@ -41,6 +41,7 @@ from app.step3_compliance import (
     parse_reference_planogram,
     parse_sku_catalog,
     pass_fail_from_score,
+    score_crop_against_sku,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -683,6 +684,8 @@ async def planogram_editor_save(
             images_dir=PLANOGRAM_IMAGES_DIR,
         )
     PLANOGRAM_EDITOR_META_DIR.mkdir(parents=True, exist_ok=True)
+    def _canon_name(text: str) -> str:
+        return " ".join(str(text or "").strip().lower().split())
     upload_map_raw = []
     try:
         parsed_map = json.loads(ideal_images_map or "[]")
@@ -703,19 +706,39 @@ async def planogram_editor_save(
         if upload_i < 0 or upload_i >= len(ideal_images):
             continue
         uf = ideal_images[upload_i]
+        if uf.content_type and not str(uf.content_type).lower().startswith("image/"):
+            continue
         data = await uf.read()
         if not data:
             continue
-        try:
-            _ = _load_normalized_rgb_image(data)
-        except Exception:
-            continue
         safe = _sanitize_filename_stem(uf.filename or f"slot_{slot_i+1}")
-        dest = ideal_dir / f"slot_{slot_i+1:03d}_{safe}.jpg"
+        ext = Path(uf.filename or "").suffix.lower().strip()
+        if not ext or len(ext) > 12 or not re.fullmatch(r"\.[a-z0-9]+", ext):
+            ext = ".jpg"
+        dest = ideal_dir / f"slot_{slot_i+1:03d}_{safe}{ext}"
         Path(dest).write_bytes(data)
         rel = dest.relative_to(BASE_DIR).as_posix()
         slots[slot_i]["reference_image_path"] = rel
         slots[slot_i]["reference_image_url"] = f"/planogram/editor/asset/{rel}"
+
+    # Если у одинаковых item_name только часть позиций получила идеальное фото,
+    # разносить путь/URL на все позиции с тем же названием.
+    grouped_best: dict[str, tuple[str, str]] = {}
+    for s in slots:
+        key = _canon_name(s.get("item_name", ""))
+        if not key:
+            continue
+        rp = str(s.get("reference_image_path", "")).strip()
+        ru = str(s.get("reference_image_url", "")).strip()
+        if rp:
+            grouped_best[key] = (rp, ru)
+    for s in slots:
+        key = _canon_name(s.get("item_name", ""))
+        if not key or key not in grouped_best:
+            continue
+        rp, ru = grouped_best[key]
+        s["reference_image_path"] = rp
+        s["reference_image_url"] = ru
 
     meta = {
         "kind": "planogram_editor",
@@ -864,6 +887,25 @@ async def planogram_editor_enrich_lm(
         model=os.getenv("LMSTUDIO_MODEL", DEFAULT_LMSTUDIO_MODEL),
         timeout_sec=float(os.getenv("LMSTUDIO_TIMEOUT_SEC", "25")),
     )
+    def _score_ic(ic: ItemClassification) -> tuple[int, float]:
+        status_rank = {
+            "ok": 3,
+            "uncertain": 2,
+            "unknown": 1,
+            "lmstudio_error": 0,
+        }.get(str(ic.status or "").strip().lower(), 1)
+        return status_rank, float(ic.confidence or 0.0)
+
+    def _expand_box(box: tuple[int, int, int, int], w: int, h: int, px: int, py: int) -> tuple[int, int, int, int]:
+        x1, y1, x2, y2 = box
+        ex1 = max(0, x1 - px)
+        ey1 = max(0, y1 - py)
+        ex2 = min(w, x2 + px)
+        ey2 = min(h, y2 + py)
+        if ex2 - ex1 < 4 or ey2 - ey1 < 4:
+            return box
+        return ex1, ey1, ex2, ey2
+
     enriched: list[dict[str, Any]] = []
     for s in slots:
         b = s["bbox_norm"]
@@ -880,13 +922,40 @@ async def planogram_editor_enrich_lm(
         if not box:
             enriched.append(s)
             continue
-        crop = img.crop(box)
-        ic = lm.classify_crop_with_recheck(crop)
+        x1, y1, x2, y2 = box
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
+        pad_x = max(3, int(round(bw * 0.10)))
+        pad_y = max(3, int(round(bh * 0.12)))
+        candidate_boxes = [
+            _expand_box(box, img.width, img.height, pad_x, pad_y),
+            box,
+            _expand_box(box, img.width, img.height, pad_x * 2, pad_y * 2),
+        ]
+        unique_boxes: list[tuple[int, int, int, int]] = []
+        seen_boxes: set[tuple[int, int, int, int]] = set()
+        for cb in candidate_boxes:
+            if cb not in seen_boxes:
+                seen_boxes.add(cb)
+                unique_boxes.append(cb)
+
+        best_ic: ItemClassification | None = None
+        for cb in unique_boxes:
+            crop = img.crop(cb)
+            ic = lm.classify_crop_with_recheck(crop)
+            if best_ic is None or _score_ic(ic) > _score_ic(best_ic):
+                best_ic = ic
+            if best_ic.status == "ok" and best_ic.confidence >= 0.85:
+                break
+        if best_ic is None:
+            enriched.append(s)
+            continue
+
         x = dict(s)
-        if ic.item_name and ic.item_name != "unknown":
-            x["item_name"] = ic.item_name
-        x["lm_confidence"] = float(ic.confidence)
-        x["lm_status"] = ic.status
+        if best_ic.item_name and best_ic.item_name != "unknown":
+            x["item_name"] = best_ic.item_name
+        x["lm_confidence"] = float(best_ic.confidence)
+        x["lm_status"] = best_ic.status
         enriched.append(x)
     return JSONResponse({"ok": True, "slots": enriched})
 
@@ -1252,7 +1321,10 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
         "presence_weight": 0.4,
         "position_weight": 0.35,
         "facings_weight": 0.25,
-        "pass_threshold": 80
+        "pass_threshold": 80,
+        "matching_level": "brand_level",
+        "foreign_sku_policy": "info_only",
+        "ideal_similarity_threshold": 0.55
       }
     }
     """
@@ -1290,16 +1362,32 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
     position_weight = float(opts.get("position_weight", 0.35) or 0.35)
     facings_weight = float(opts.get("facings_weight", 0.25) or 0.25)
     pass_threshold = float(opts.get("pass_threshold", 80.0) or 80.0)
+    matching_level = str(opts.get("matching_level", "sku_only") or "sku_only").strip().lower()
+    foreign_sku_policy = str(opts.get("foreign_sku_policy", "hard_fail") or "hard_fail").strip().lower()
+    if matching_level not in {"sku_only", "brand_level"}:
+        matching_level = "sku_only"
+    if foreign_sku_policy not in {"hard_fail", "soft_substitute", "info_only"}:
+        foreign_sku_policy = "hard_fail"
+    ideal_similarity_threshold = float(opts.get("ideal_similarity_threshold", 0.55) or 0.55)
+    ideal_similarity_threshold = max(0.0, min(1.0, ideal_similarity_threshold))
 
     ref_base = _result_dir_to_project_path(str(reference.get("result_dir", "")))
     positions_src = reference.get("reference_positions", {}).get("positions", [])
     if not isinstance(positions_src, list) or not positions_src:
         return JSONResponse({"ok": False, "error": "No positions in reference_result_dir"}, status_code=400)
 
-    try:
-        ref_embeddings = build_reference_embeddings(catalog, base_dir=BASE_DIR)
-    except ValueError as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    ref_embeddings = build_reference_embeddings(catalog, base_dir=BASE_DIR)
+    matchable_sku_ids = set(ref_embeddings.keys())
+    catalog_for_matching = [item for item in catalog if item.sku_id in matchable_sku_ids]
+    if not catalog_for_matching:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "В sku_catalog нет ни одного SKU с доступными reference_images",
+            },
+            status_code=400,
+        )
+    catalog_without_refs = [item.sku_id for item in catalog if item.sku_id not in matchable_sku_ids]
     similar_groups = infer_similar_sku_groups(catalog)
 
     with Image.open(ref_base / "input.jpg") as src:
@@ -1309,6 +1397,8 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
         full_img = full_img.copy()
 
     observed_positions: list[dict[str, Any]] = []
+    expected_by_slot = {(s.shelf_id, s.slot_index): s.sku_id for s in reference_slots}
+    ideal_similarity_flags: list[dict[str, Any]] = []
     for pos in positions_src:
         if not isinstance(pos, dict):
             continue
@@ -1323,9 +1413,24 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
             continue
         crop = full_img.crop(box)
         llm_hint = str(pos.get("lm_item_name", "")).strip()
+        expected_sku = expected_by_slot.get((shelf_id, position_in_shelf), "")
+        ideal_similarity = score_crop_against_sku(crop, expected_sku, ref_embeddings) if expected_sku else 0.0
+        is_similar_to_ideal = bool(expected_sku and ideal_similarity >= ideal_similarity_threshold)
+        if expected_sku and not is_similar_to_ideal:
+            ideal_similarity_flags.append(
+                {
+                    "index": idx,
+                    "shelf_id": shelf_id,
+                    "position_in_shelf": position_in_shelf,
+                    "expected_sku_id": expected_sku,
+                    "ideal_similarity": float(ideal_similarity),
+                    "ideal_similarity_threshold": float(ideal_similarity_threshold),
+                    "reason": "low_ideal_similarity",
+                }
+            )
         m = match_sku_for_crop(
             crop,
-            catalog,
+            catalog_for_matching,
             ref_embeddings,
             confidence_threshold=confidence_threshold,
             similar_groups=similar_groups,
@@ -1340,10 +1445,14 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
                 "bbox": bbox_ref,
                 "predicted_sku_id": m["predicted_sku_id"],
                 "predicted_name": m["predicted_name"],
+                "predicted_brand": m["predicted_brand"],
                 "confidence": m["confidence"],
                 "top_k": m["top_k"],
                 "status": m["status"],
                 "observed_facings": 1,
+                "expected_sku_id": expected_sku,
+                "ideal_similarity": float(ideal_similarity),
+                "is_similar_to_ideal_position": is_similar_to_ideal,
             }
         )
 
@@ -1359,6 +1468,9 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
         presence_weight=presence_weight,
         position_weight=position_weight,
         facings_weight=facings_weight,
+        catalog=catalog,
+        matching_level=matching_level,
+        foreign_sku_policy=foreign_sku_policy,
     )
     uncertainty_flags = collect_uncertainty_flags(
         observed_positions,
@@ -1376,6 +1488,11 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
             "facings_ratio": metrics["facings_ratio"],
         },
         "deviations": metrics["deviations"],
+        "foreign_brand_count": metrics.get("foreign_brand_count", 0),
+        "brand_substitute_count": metrics.get("brand_substitute_count", 0),
+        "info_only_deviation_count": metrics.get("info_only_deviation_count", 0),
+        "catalog_items_without_reference_images": catalog_without_refs,
+        "ideal_similarity_flags": ideal_similarity_flags,
         "uncertainty_flags": uncertainty_flags,
         "observed_positions": observed_positions,
     }

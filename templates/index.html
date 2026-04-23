@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
@@ -329,6 +329,18 @@
           </div>
           <div class="row">
             <div>
+              <label for="compliancePlanogramSelect">Эталонная планограмма (из сохранённых)</label>
+              <select id="compliancePlanogramSelect">
+                <option value="">Выберите планограмму</option>
+              </select>
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <button type="button" id="loadCompliancePlanogramBtn">Подставить JSON из выбранной</button>
+            </div>
+          </div>
+          <div class="row">
+            <div>
               <label for="referencePlanogramJson">Эталонная планограмма (JSON)</label>
               <textarea id="referencePlanogramJson" spellcheck="false"></textarea>
             </div>
@@ -345,6 +357,29 @@
             <div>
               <label for="complianceLlmNameWeight">Вес текстового hint (LLM)</label>
               <input id="complianceLlmNameWeight" type="number" min="0" max="1" step="0.01" value="0.12">
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="complianceMatchingLevel">Уровень сравнения</label>
+              <select id="complianceMatchingLevel">
+                <option value="sku_only">Только SKU</option>
+                <option value="brand_level">SKU + уровень бренда</option>
+              </select>
+            </div>
+            <div>
+              <label for="complianceForeignPolicy">Политика чужих товаров</label>
+              <select id="complianceForeignPolicy">
+                <option value="hard_fail">Всегда нарушение (штраф)</option>
+                <option value="soft_substitute">Мягкая замена бренда</option>
+                <option value="info_only" selected>Только информативно (без штрафа)</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label for="idealSimilarityThreshold">Порог похожести на идеальную позицию</label>
+              <input id="idealSimilarityThreshold" type="number" min="0" max="1" step="0.01" value="0.55">
             </div>
           </div>
           <div class="row">
@@ -463,6 +498,7 @@
       }
       const deviations = Array.isArray(payload.deviations) ? payload.deviations : [];
       const uncertainty = Array.isArray(payload.uncertainty_flags) ? payload.uncertainty_flags : [];
+      const idealFlags = Array.isArray(payload.ideal_similarity_flags) ? payload.ideal_similarity_flags : [];
       const m = payload.metrics || {};
       const topDev = deviations.slice(0, 8).map((d) => {
         const loc = `полка ${d.shelf_id || 0}, слот ${d.slot_index || 0}`;
@@ -476,6 +512,9 @@
         `<div style="margin-top:6px"><b>Метрики:</b> presence=${Number(m.presence_ratio || 0).toFixed(3)}, ` +
         `position=${Number(m.position_ratio || 0).toFixed(3)}, facings=${Number(m.facings_ratio || 0).toFixed(3)}</div>` +
         `<div style="margin-top:6px"><b>Отклонений:</b> ${deviations.length}, <b>Uncertainty:</b> ${uncertainty.length}</div>` +
+        `<div style="margin-top:6px"><b>Не похожи на идеальную позицию:</b> ${idealFlags.length}</div>` +
+        `<div style="margin-top:6px"><b>Brand-level:</b> foreign=${Number(payload.foreign_brand_count || 0)}, ` +
+        `substitute=${Number(payload.brand_substitute_count || 0)}, info_only=${Number(payload.info_only_deviation_count || 0)}</div>` +
         `${topDev.length ? `<div style="margin-top:8px; white-space:pre-wrap">${escapeHtml(topDev.join("\n"))}</div>` : ""}`;
     }
 
@@ -702,6 +741,84 @@
       return lmRecognitionItemsCache;
     }
 
+    function buildSkuCatalogFromMetaSlots(metaSlots) {
+      const bySku = {};
+      (Array.isArray(metaSlots) ? metaSlots : []).forEach((s) => {
+        const skuId = String(s?.sku_id || "").trim();
+        if (!skuId) return;
+        const canonicalName = String(s?.item_name || skuId).trim() || skuId;
+        const referencePath = String(s?.reference_image_path || "").trim();
+        if (!bySku[skuId]) {
+          bySku[skuId] = {
+            sku_id: skuId,
+            canonical_name: canonicalName,
+            aliases: [],
+            reference_images: referencePath ? [referencePath] : [],
+          };
+        } else if (referencePath && !bySku[skuId].reference_images.includes(referencePath)) {
+          bySku[skuId].reference_images.push(referencePath);
+        }
+      });
+      return { items: Object.values(bySku) };
+    }
+
+    async function loadPlanogramListForCompliance() {
+      const select = document.getElementById("compliancePlanogramSelect");
+      select.innerHTML = '<option value="">Выберите планограмму</option>';
+      const resp = await fetch("/planogram/editor/list");
+      const payload = await resp.json();
+      (payload.items || []).forEach((it) => {
+        const id = String(it.id || "").trim();
+        if (!id) return;
+        const opt = document.createElement("option");
+        opt.value = id;
+        const d = new Date(Number(it.created_at || 0) * 1000);
+        const dt = Number.isFinite(d.getTime()) ? d.toLocaleString() : "дата неизвестна";
+        const metaMark = it.has_editor_metadata ? "meta" : "без meta";
+        opt.textContent = `${it.name || "planogram"} · ${dt} · ${metaMark}`;
+        select.appendChild(opt);
+      });
+    }
+
+    async function applyCompliancePlanogramSelection() {
+      const select = document.getElementById("compliancePlanogramSelect");
+      const planogramId = String(select.value || "").trim();
+      if (!planogramId) throw new Error("Сначала выберите планограмму");
+      const resp = await fetch(`/planogram/editor/${encodeURIComponent(planogramId)}`);
+      const payload = await resp.json();
+      if (!payload.ok) throw new Error(payload.error || "Не удалось загрузить планограмму");
+      const metadata = payload.metadata || {};
+      const metaSlots = Array.isArray(metadata.slots) ? metadata.slots : [];
+      const referencePlanogram = metadata.reference_planogram && typeof metadata.reference_planogram === "object"
+        ? metadata.reference_planogram
+        : {
+            slots: metaSlots.map((s) => ({
+              shelf_id: Number(s.shelf_id || 1),
+              slot_index: Number(s.slot_index || 1),
+              expected_sku_id: String(s.sku_id || ""),
+              expected_facings: Number(s.expected_facings || 1),
+            })),
+          };
+      const skuCatalog = metadata.sku_catalog && typeof metadata.sku_catalog === "object"
+        ? metadata.sku_catalog
+        : buildSkuCatalogFromMetaSlots(metaSlots);
+      prettyJsonOrDefault("referencePlanogramJson", referencePlanogram);
+      prettyJsonOrDefault("skuCatalogJson", skuCatalog);
+      output.textContent = JSON.stringify(
+        {
+          ok: true,
+          source: "planogram/editor",
+          planogram_id: planogramId,
+          planogram_name: payload?.planogram?.name || "",
+          slots_count: metaSlots.length,
+          reference_planogram_slots: Array.isArray(referencePlanogram?.slots) ? referencePlanogram.slots.length : 0,
+          sku_items: Array.isArray(skuCatalog?.items) ? skuCatalog.items.length : 0,
+        },
+        null,
+        2,
+      );
+    }
+
     document.getElementById("referenceForm").addEventListener("submit", async (e) => {
       e.preventDefault();
       const payload = await sendForm(e.currentTarget, "/reference/save");
@@ -768,6 +885,24 @@
       await loadLmRecognitionHistory(name);
     });
 
+    document.getElementById("loadCompliancePlanogramBtn").addEventListener("click", async () => {
+      try {
+        await applyCompliancePlanogramSelection();
+      } catch (err) {
+        output.textContent = JSON.stringify({ ok: false, error: err?.message || "Ошибка загрузки планограммы" }, null, 2);
+      }
+    });
+
+    document.getElementById("compliancePlanogramSelect").addEventListener("change", async () => {
+      const select = document.getElementById("compliancePlanogramSelect");
+      if (!select.value) return;
+      try {
+        await applyCompliancePlanogramSelection();
+      } catch (err) {
+        output.textContent = JSON.stringify({ ok: false, error: err?.message || "Ошибка загрузки планограммы" }, null, 2);
+      }
+    });
+
     function buildCompliancePayload() {
       const referenceResultDir = (document.getElementById("complianceReferenceResultDir").value || "").trim();
       const planRaw = (document.getElementById("referencePlanogramJson").value || "").trim();
@@ -794,6 +929,9 @@
         options: {
           confidence_threshold: Number(document.getElementById("complianceConfidenceThreshold").value || 0.62),
           llm_name_weight: Number(document.getElementById("complianceLlmNameWeight").value || 0.12),
+          matching_level: String(document.getElementById("complianceMatchingLevel").value || "sku_only"),
+          foreign_sku_policy: String(document.getElementById("complianceForeignPolicy").value || "hard_fail"),
+          ideal_similarity_threshold: Number(document.getElementById("idealSimilarityThreshold").value || 0.55),
           presence_weight: Number(document.getElementById("presenceWeight").value || 0.4),
           position_weight: Number(document.getElementById("positionWeight").value || 0.35),
           facings_weight: Number(document.getElementById("facingsWeight").value || 0.25),
@@ -836,12 +974,14 @@
         {
           sku_id: "sku_101",
           canonical_name: "Brand Cola 0.5",
+          brand: "brand",
           aliases: ["Brand Cola Classic 0.5"],
           reference_images: ["img/catalog/sku_101_front.jpg"]
         },
         {
           sku_id: "sku_205",
           canonical_name: "Brand Zero 0.5",
+          brand: "brand",
           aliases: [],
           reference_images: ["img/catalog/sku_205_front.jpg"]
         }
@@ -850,6 +990,7 @@
     loadHistoryForReferenceSku();
     loadHistoryForSku("");
     loadLmRecognitionHistory("");
+    loadPlanogramListForCompliance();
   </script>
 </body>
 </html>
