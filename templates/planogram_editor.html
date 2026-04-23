@@ -202,6 +202,7 @@
     let annotatedPreviewUrl = "";
     let deleteMode = false;
     let activeSlotIndex = -1;
+    let currentPlanogramId = "";
 
     function setStatus(text, isErr=false) {
       statusBox.style.color = isErr ? "#9f1239" : "#1f2a44";
@@ -220,6 +221,18 @@
       const h = Math.max(1, imageObj.naturalHeight || imageObj.height || 1);
       canvas.width = w;
       canvas.height = h;
+    }
+
+    async function assignImgFileFromUrl(url, fallbackName = "planogram_image.jpg") {
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const blob = await resp.blob();
+        const ext = (blob.type && blob.type.includes("png")) ? "png" : "jpg";
+        imgFile = new File([blob], fallbackName.replace(/\.(jpg|jpeg|png)$/i, `.${ext}`), { type: blob.type || "image/jpeg" });
+      } catch (_err) {
+        // no-op: оставляем imgFile как есть
+      }
     }
 
     function rectFromPoints(a, b) {
@@ -436,6 +449,7 @@
       const f = sourceImage.files?.[0];
       if (!f) return;
       imgFile = f;
+      currentPlanogramId = "";
       annotatedPreviewUrl = "";
       const url = URL.createObjectURL(f);
       const loaded = new Image();
@@ -537,6 +551,7 @@
     });
     document.getElementById("clearBtn").addEventListener("click", () => {
       slots = [];
+      currentPlanogramId = "";
       refreshSlotsTable();
       drawCanvas();
     });
@@ -567,6 +582,7 @@
           bbox_norm: s.bbox_norm || toNorm(s.bbox_px),
         }));
         const fd = new FormData();
+        if (currentPlanogramId) fd.append("planogram_id", currentPlanogramId);
         fd.append("name", planogramName.value.trim());
         fd.append("slots_json", JSON.stringify(payloadSlots));
         const uploadMap = [];
@@ -583,6 +599,7 @@
         const resp = await fetch("/planogram/editor/save", { method: "POST", body: fd });
         const body = await resp.json();
         if (!body.ok) throw new Error(body.error || "Ошибка сохранения");
+        currentPlanogramId = String(body.planogram_id || currentPlanogramId || "");
         if (Array.isArray(body.metadata?.slots)) {
           slots = mapSlotsFromMetadata(body.metadata.slots);
           refreshSlotsTable();
@@ -770,10 +787,12 @@
         return;
       }
       const metaSlots = Array.isArray(body.metadata?.slots) ? body.metadata.slots : [];
+      currentPlanogramId = String(body.planogram?.id || id);
       slots = mapSlotsFromMetadata(metaSlots);
       normalizeSlotsByGeometry();
       planogramName.value = body.planogram?.name || "";
       if (body.planogram?.image_url) {
+        await assignImgFileFromUrl(body.planogram.image_url, `${body.planogram?.name || "planogram"}.jpg`);
         const loaded = new Image();
         loaded.onload = () => {
           img = loaded;

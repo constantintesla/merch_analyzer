@@ -21,7 +21,13 @@ from app.planogram_editor import (
     normalize_editor_slots,
     renumber_slots_within_shelves,
 )
-from app.planogram_store import create_planogram, delete_planogram, get_planogram, list_planograms
+from app.planogram_store import (
+    create_planogram,
+    delete_planogram,
+    get_planogram,
+    list_planograms,
+    update_planogram,
+)
 from app.similarity import cluster_crop_indices_by_similarity
 from app.sku110k_adapter import SKU110KDetector
 from app.step3_compliance import (
@@ -628,6 +634,7 @@ async def planogram_editor_delete(planogram_id: str) -> JSONResponse:
 
 @app.post("/planogram/editor/save")
 async def planogram_editor_save(
+    planogram_id: str = Form(default=""),
     name: str = Form(...),
     slots_json: str = Form(...),
     ideal_images_map: str = Form(default="[]"),
@@ -654,13 +661,27 @@ async def planogram_editor_save(
                 return JSONResponse({"ok": False, "error": f"invalid image: {exc}"}, status_code=400)
 
     csv_text = editor_slots_to_csv(slots)
-    stored = create_planogram(
-        PLANOGRAM_DB_PATH,
-        name=title,
-        csv_text=csv_text,
-        image_bytes=image_bytes,
-        images_dir=PLANOGRAM_IMAGES_DIR,
-    )
+    pid = planogram_id.strip()
+    if pid:
+        updated = update_planogram(
+            PLANOGRAM_DB_PATH,
+            pid,
+            csv_text=csv_text,
+            name=title,
+            image_bytes=image_bytes,
+            images_dir=PLANOGRAM_IMAGES_DIR,
+        )
+        if updated is None:
+            return JSONResponse({"ok": False, "error": "planogram not found for update"}, status_code=404)
+        stored = updated
+    else:
+        stored = create_planogram(
+            PLANOGRAM_DB_PATH,
+            name=title,
+            csv_text=csv_text,
+            image_bytes=image_bytes,
+            images_dir=PLANOGRAM_IMAGES_DIR,
+        )
     PLANOGRAM_EDITOR_META_DIR.mkdir(parents=True, exist_ok=True)
     upload_map_raw = []
     try:
