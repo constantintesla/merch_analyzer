@@ -294,6 +294,7 @@
     }
 
     function refreshSlotsTable() {
+      normalizeSlotsWithinShelves();
       slotsBody.innerHTML = "";
       slots.forEach((s, idx) => {
         const tr = document.createElement("tr");
@@ -405,6 +406,32 @@
       });
     }
 
+    function normalizeSlotsWithinShelves() {
+      if (!slots.length) return;
+      const byShelf = {};
+      slots.forEach((s) => {
+        const sid = Math.max(1, Number(s.shelf_id || 1));
+        s.shelf_id = sid;
+        if (!byShelf[sid]) byShelf[sid] = [];
+        byShelf[sid].push(s);
+      });
+      Object.keys(byShelf).forEach((sidRaw) => {
+        const sid = Number(sidRaw);
+        const items = byShelf[sid];
+        items.sort((a, b) => {
+          const ax = a.bbox_px?.x1 ?? 0;
+          const bx = b.bbox_px?.x1 ?? 0;
+          const ay = a.bbox_px?.y1 ?? 0;
+          const by = b.bbox_px?.y1 ?? 0;
+          return ax - bx || ay - by;
+        });
+        items.forEach((s, idx) => {
+          s.shelf_id = sid;
+          s.slot_index = idx + 1;
+        });
+      });
+    }
+
     sourceImage.addEventListener("change", () => {
       const f = sourceImage.files?.[0];
       if (!f) return;
@@ -486,6 +513,9 @@
         return;
       }
       slots[i][k] = (k === "item_name" || k === "sku_id") ? el.value : Number(el.value || 0);
+      if (k === "shelf_id" || k === "slot_index") {
+        refreshSlotsTable();
+      }
       buildStep3Json();
       drawCanvas();
     });
@@ -511,29 +541,23 @@
       drawCanvas();
     });
     document.getElementById("autonumberBtn").addEventListener("click", () => {
-      slots.sort((a, b) => a.bbox_px.y1 - b.bbox_px.y1 || a.bbox_px.x1 - b.bbox_px.x1);
-      let shelf = 1, prevY = null, pos = 0;
+      normalizeSlotsByGeometry();
+      normalizeSlotsWithinShelves();
       slots.forEach((s, idx) => {
-        if (prevY == null || Math.abs(s.bbox_px.y1 - prevY) <= 50) {
-          pos += 1;
-        } else {
-          shelf += 1;
-          pos = 1;
+        if (!s.item_name || String(s.item_name).startsWith("Позиция ")) {
+          s.item_name = `Позиция ${idx + 1}`;
         }
-        prevY = s.bbox_px.y1;
-        s.shelf_id = shelf;
-        s.slot_index = pos;
-        if (!s.item_name || s.item_name.startsWith("Позиция ")) s.item_name = `Позиция ${idx + 1}`;
       });
       refreshSlotsTable();
       drawCanvas();
-      setStatus("Слоты перенумерованы по геометрии (сверху-вниз, слева-направо).");
+      setStatus("Слоты перенумерованы корректно: полки сверху-вниз, позиции слева-направо (1..n).");
     });
 
     document.getElementById("saveBtn").addEventListener("click", async () => {
       try {
         if (!planogramName.value.trim()) throw new Error("Введите название планограммы");
         if (!slots.length) throw new Error("Добавьте хотя бы одну зону");
+        normalizeSlotsWithinShelves();
         const payloadSlots = slots.map((s) => ({
           shelf_id: Number(s.shelf_id || 0),
           slot_index: Number(s.slot_index || 0),
@@ -678,6 +702,7 @@
       s.expected_facings = Number(document.getElementById("slotFacingsInput").value || 1);
       const f = document.getElementById("slotIdealInput").files?.[0];
       if (f) s.ideal_file = f;
+      normalizeSlotsWithinShelves();
       refreshSlotsTable();
       drawCanvas();
       closeSlotModal();

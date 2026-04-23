@@ -44,10 +44,27 @@ def normalize_editor_slots(raw_slots: list[dict[str, Any]]) -> list[dict[str, An
         )
     if not out:
         raise ValueError("at least one slot is required")
-    keys = {(int(s["shelf_id"]), int(s["slot_index"])) for s in out}
-    if len(keys) != len(out):
-        raise ValueError("duplicate shelf_id+slot_index pairs")
     return out
+
+
+def renumber_slots_within_shelves(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for s in slots:
+        sid = int(s.get("shelf_id", 0) or 0)
+        if sid <= 0:
+            continue
+        grouped.setdefault(sid, []).append(s)
+    for sid, items in grouped.items():
+        items.sort(
+            key=lambda it: (
+                float((it.get("bbox_norm") or {}).get("x1", 0.0)),
+                float((it.get("bbox_norm") or {}).get("y1", 0.0)),
+            )
+        )
+        for idx, item in enumerate(items, start=1):
+            item["shelf_id"] = sid
+            item["slot_index"] = idx
+    return slots
 
 
 def editor_slots_to_csv(slots: list[dict[str, Any]]) -> str:

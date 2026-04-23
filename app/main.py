@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -19,6 +19,7 @@ from app.planogram_editor import (
     build_reference_planogram_json,
     editor_slots_to_csv,
     normalize_editor_slots,
+    renumber_slots_within_shelves,
 )
 from app.planogram_store import create_planogram, delete_planogram, get_planogram, list_planograms
 from app.similarity import cluster_crop_indices_by_similarity
@@ -639,6 +640,7 @@ async def planogram_editor_save(
         if not isinstance(raw_slots, list):
             raise ValueError("slots_json must be a JSON array")
         slots = normalize_editor_slots(raw_slots)
+        slots = renumber_slots_within_shelves(slots)
     except (ValueError, json.JSONDecodeError) as exc:
         return JSONResponse({"ok": False, "error": f"invalid slots_json: {exc}"}, status_code=400)
 
@@ -824,6 +826,7 @@ async def planogram_editor_enrich_lm(
         if not isinstance(raw_slots, list):
             raise ValueError("slots_json must be list")
         slots = normalize_editor_slots(raw_slots)
+        slots = renumber_slots_within_shelves(slots)
     except (json.JSONDecodeError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": f"invalid slots_json: {exc}"}, status_code=400)
 
