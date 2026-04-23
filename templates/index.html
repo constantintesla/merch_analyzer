@@ -197,6 +197,11 @@
     .crop-detail-text dd { margin: 2px 0 0 0; }
     .crop-detail-text dl { margin: 0; }
     .muted { color: #506081; font-size: 12px; }
+    #uiProgress {
+      margin-top: 10px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
     .analysis-highlight {
       margin-bottom: 12px;
       padding: 10px 12px;
@@ -265,6 +270,7 @@
           </div>
           <p><button type="submit">Разобрать и сохранить</button></p>
         </form>
+        <div id="uiProgress" class="analysis-highlight" style="display:none" role="status" aria-live="polite"></div>
 
         <div class="row">
           <div>
@@ -443,12 +449,37 @@
       });
     }
 
-    async function sendForm(form, url) {
-      const fd = new FormData(form);
-      const resp = await fetch(url, { method: "POST", body: fd });
-      const payload = await resp.json();
-      output.textContent = JSON.stringify(payload, null, 2);
-      return payload;
+    function setUiProgress(message) {
+      const el = document.getElementById("uiProgress");
+      if (!el) return;
+      if (message) {
+        el.style.display = "block";
+        el.textContent = message;
+      } else {
+        el.style.display = "none";
+        el.textContent = "";
+      }
+    }
+
+    async function sendForm(form, url, busyHint) {
+      const hint = busyHint || "";
+      if (hint) {
+        setUiProgress(hint);
+      }
+      try {
+        const fd = new FormData(form);
+        const t0 = performance.now();
+        const resp = await fetch(url, { method: "POST", body: fd });
+        const sec = ((performance.now() - t0) / 1000).toFixed(1);
+        if (hint) {
+          setUiProgress(`${hint} Ответ сервера за ${sec} с, разбор JSON…`);
+        }
+        const payload = await resp.json();
+        output.textContent = JSON.stringify(payload, null, 2);
+        return payload;
+      } finally {
+        setUiProgress("");
+      }
     }
 
     function prettyJsonOrDefault(targetId, valueObj) {
@@ -704,7 +735,11 @@
 
     document.getElementById("referenceForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const payload = await sendForm(e.currentTarget, "/reference/save");
+      const payload = await sendForm(
+        e.currentTarget,
+        "/reference/save",
+        "Шаг 1 (SKU110K): запрос отправлен. Детекция в Docker/WSL может занять 1–10+ мин при первом запуске — смотрите логи сервера (MERCH_LOG_LEVEL=INFO).",
+      );
       renderVisual(payload);
       const layoutName = (document.getElementById("layoutNameInput").value || "").trim();
       if (layoutName) {
@@ -762,7 +797,11 @@
 
     document.getElementById("recognizeForm").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const payload = await sendForm(e.currentTarget, "/recognize");
+      const payload = await sendForm(
+        e.currentTarget,
+        "/recognize",
+        "Шаг 2 (LM Studio): идут запросы к модели — длительность зависит от числа кропов и таймаута LMSTUDIO_TIMEOUT_SEC.",
+      );
       renderVisual(payload);
       const name = (document.getElementById("recognitionNameInput").value || "").trim();
       await loadLmRecognitionHistory(name);
@@ -813,14 +852,22 @@
         renderComplianceResult(fail);
         return;
       }
-      const resp = await fetch("/compliance/check", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const body = await resp.json();
-      output.textContent = JSON.stringify(body, null, 2);
-      renderComplianceResult(body);
+      setUiProgress("Шаг 3 (compliance): расчёт эмбеддингов и сравнение с планограммой…");
+      try {
+        const t0 = performance.now();
+        const resp = await fetch("/compliance/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const sec = ((performance.now() - t0) / 1000).toFixed(1);
+        setUiProgress(`Шаг 3: ответ за ${sec} с…`);
+        const body = await resp.json();
+        output.textContent = JSON.stringify(body, null, 2);
+        renderComplianceResult(body);
+      } finally {
+        setUiProgress("");
+      }
     });
 
     setupPreviewZoomFollow();

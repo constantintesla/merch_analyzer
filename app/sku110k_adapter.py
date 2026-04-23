@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import csv
+import logging
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import List
 
@@ -14,6 +16,17 @@ import pandas as pd
 from PIL import Image
 
 from app.analytics import Detection
+
+logger = logging.getLogger("merch_analyzer.sku110k")
+
+
+def _tail_text(text: str | None, max_chars: int = 3500) -> str:
+    if not text:
+        return ""
+    s = text.strip()
+    if len(s) <= max_chars:
+        return s
+    return "…" + s[-max_chars:]
 
 
 class SKU110KDetector:
@@ -91,6 +104,17 @@ class SKU110KDetector:
 
         image_path = str(Path(image_path).resolve())
         run_mode = self._resolve_run_mode()
+        timeout_sec_raw = (os.getenv("SKU110K_PREDICT_TIMEOUT_SEC") or "1800").strip()
+        timeout_sec = int(timeout_sec_raw) if timeout_sec_raw.isdigit() else 1800
+        t_pipeline = time.perf_counter()
+        logger.info(
+            "SKU110K: старт detect_image path=%s run_mode=%s (configured=%s) score_threshold=%s timeout_sec=%s",
+            image_path,
+            run_mode,
+            self.run_mode,
+            self.score_threshold,
+            timeout_sec,
+        )
 
         tmp_root = self.repo_path.parent / "tmp"
         tmp_root.mkdir(parents=True, exist_ok=True)
@@ -107,6 +131,13 @@ class SKU110KDetector:
 
             with Image.open(image_dst) as img:
                 width, height = img.size
+            logger.info(
+                "SKU110K: подготовлен датасет tmpdir=%s image_rel=%s size=%sx%s",
+                tmpdir,
+                image_rel_path,
+                width,
+                height,
+            )
 
             annotations_csv = tmp / "images.csv"
             classes_csv = tmp / "classes.csv"
@@ -152,11 +183,19 @@ class SKU110KDetector:
                     f"{shlex.quote(weights_wsl)}"
                 )
                 command = ["wsl", "bash", "-lc", bash_cmd]
+                logger.info(
+                    "SKU110K: запуск WSL-предикта (первый прогон может занять несколько минут из-за загрузки TF/Keras)."
+                )
+                t0 = time.perf_counter()
                 proc = subprocess.run(
                     command,
-                    capture_output=True,
-                    text=True,
                     check=False,
+                    timeout=timeout_sec,
+                )
+                logger.info(
+                    "SKU110K: WSL завершён за %.1f с returncode=%s",
+                    time.perf_counter() - t0,
+                    proc.returncode,
                 )
             elif run_mode == "docker":
                 repo_docker = self._to_docker_mounted_path(self.repo_path)
@@ -200,11 +239,24 @@ class SKU110KDetector:
                         bash_cmd,
                     ]
                 )
+                logger.info(
+                    "SKU110K: запуск Docker image=%s gpu=%s mount=%s:%s (первый старт контейнера и загрузка весов "
+                    "могут занять 1–10+ минут — это нормально).",
+                    self.docker_image,
+                    self.docker_use_gpu,
+                    self.docker_mount_host,
+                    self.docker_mount_target,
+                )
+                t0 = time.perf_counter()
                 proc = subprocess.run(
                     command,
-                    capture_output=True,
-                    text=True,
                     check=False,
+                    timeout=timeout_sec,
+                )
+                logger.info(
+                    "SKU110K: Docker завершён за %.1f с returncode=%s",
+                    time.perf_counter() - t0,
+                    proc.returncode,
                 )
             else:
                 command = [
@@ -222,15 +274,27 @@ class SKU110KDetector:
                 ]
                 env = os.environ.copy()
                 env["PYTHONPATH"] = str(self.repo_path)
+                logger.info(
+                    "SKU110K: запуск native python=%s cwd=%s (первый прогон может быть долгим).",
+                    self.python_bin,
+                    self.repo_path,
+                )
+                t0 = time.perf_counter()
                 proc = subprocess.run(
                     command,
                     cwd=str(self.repo_path),
                     env=env,
-                    capture_output=True,
-                    text=True,
                     check=False,
+                    timeout=timeout_sec,
+                )
+                logger.info(
+                    "SKU110K: native завершён за %.1f с returncode=%s",
+                    time.perf_counter() - t0,
+                    proc.returncode,
                 )
             if proc.returncode != 0:
+                logger.error("SKU110K: stdout tail:\n%s", _tail_text(proc.stdout))
+                logger.error("SKU110K: stderr tail:\n%s", _tail_text(proc.stderr))
                 raise RuntimeError(
                     f"SKU110K prediction failed (mode={run_mode}).\n"
                     f"Command: {' '.join(command)}\n"
@@ -244,8 +308,14 @@ class SKU110KDetector:
             else:
                 results_csv = self._find_latest_results_csv(results_dir, existing_results)
 
-            return self._read_detections(results_csv)
-
+            logger.info("SKU110K: CSV результатов %s", results_csv)
+            detections = self._read_detections(results_csv)
+            logger.info(
+                "SKU110K: готово за %.1f с, детекций после порога: %d",
+                time.perf_counter() - t_pipeline,
+                len(detections),
+            )
+            return detections
     @staticmethod
     def _find_latest_results_csv(results_dir: Path, previous_files: set[Path]) -> Path:
         if not results_dir.exists():

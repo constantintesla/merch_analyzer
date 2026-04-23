@@ -10,6 +10,11 @@ Param(
 )
 
 $ErrorActionPreference = "Stop"
+# In PowerShell 7+, some native commands writing to stderr produce terminating errors
+# when ErrorActionPreference=Stop. We validate exit codes manually for native tools.
+if ($null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
@@ -68,7 +73,7 @@ function Assert-CommandExists {
 
 function Test-DockerImageExists {
     param([string]$ImageName)
-    docker image inspect $ImageName 2>$null *> $null
+    & cmd /c "docker image inspect ""$ImageName"" >nul 2>nul"
     return $LASTEXITCODE -eq 0
 }
 
@@ -92,9 +97,15 @@ if (-not (Test-Path $PythonExe)) {
     Write-Host "Creating .venv..." -ForegroundColor Cyan
     try {
         py -3 -m venv (Join-Path $ProjectRoot ".venv")
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create virtual environment using 'py -3'."
+        }
     }
     catch {
         python -m venv (Join-Path $ProjectRoot ".venv")
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create virtual environment using 'python'."
+        }
     }
 }
 
@@ -109,7 +120,13 @@ if ($InstallRequirements) {
     }
     Write-Host "Installing dependencies from requirements.txt..." -ForegroundColor Cyan
     & $PythonExe -m pip install --upgrade pip
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to upgrade pip in virtual environment."
+    }
     & $PythonExe -m pip install -r $RequirementsPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install dependencies from requirements.txt."
+    }
 }
 
 $AppEntry = Join-Path $ProjectRoot "app\main.py"
@@ -147,7 +164,8 @@ if (-not $SkipSkuChecks) {
     switch ($SkuRunMode) {
         "docker" {
             Assert-CommandExists -CommandName "docker" -Hint "Install/start Docker Desktop."
-            docker info *> $null
+            # Use cmd wrapper to avoid PowerShell NativeCommandError on non-fatal stderr warnings.
+            & cmd /c "docker info >nul 2>nul"
             if ($LASTEXITCODE -ne 0) {
                 throw "Docker is installed but daemon is unavailable. Start Docker Desktop."
             }
@@ -205,3 +223,6 @@ if ($PreflightOnly) {
 
 Write-Host "Starting FastAPI: http://$BindHost`:$Port" -ForegroundColor Green
 & $PythonExe @UvicornArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "FastAPI/uvicorn exited with code $LASTEXITCODE."
+}

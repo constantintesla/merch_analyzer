@@ -1,8 +1,10 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +17,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from app.analytics import Detection, assign_shelves_and_positions
 from app.lmstudio_client import ItemClassification, LMStudioClient
+from app.merch_logging import configure_merch_logging
 from app.planogram_editor import (
     build_reference_planogram_json,
     editor_slots_to_csv,
@@ -60,6 +63,12 @@ DEFAULT_DOCKER_USE_GPU = True
 DEFAULT_SCORE_THRESHOLD = 0.7
 
 app = FastAPI(title="Merch Analyzer (simplified)")
+logger = logging.getLogger("merch_analyzer")
+
+
+@app.on_event("startup")
+async def _merch_configure_logging() -> None:
+    configure_merch_logging()
 
 
 def _sanitize_filename_stem(original_name: str, *, max_len: int = 80) -> str:
@@ -107,7 +116,20 @@ def _save_reference_positions_sku(
     detector: SKU110KDetector,
     run_dir: Path,
 ) -> dict[str, Any]:
+    t0 = time.perf_counter()
+    logger.info(
+        "reference: вызов SKU110K detect_image path=%s run_dir=%s image_size=%sx%s",
+        image_path,
+        run_dir,
+        img.width,
+        img.height,
+    )
     detections = detector.detect_image(str(image_path))
+    logger.info(
+        "reference: SKU110K вернул %d сырых боксов за %.1f с",
+        len(detections),
+        time.perf_counter() - t0,
+    )
     det_objects: list[Detection] = [
         Detection(x1=float(d.x1), y1=float(d.y1), x2=float(d.x2), y2=float(d.y2), score=float(d.score), label=str(d.label))
         for d in detections
@@ -145,6 +167,7 @@ def _save_reference_positions_sku(
                 ),
             }
         )
+    logger.info("reference: после фильтра bbox сохранено позиций=%d", len(saved_positions))
     shelf_layout = _estimate_shelf_layout(saved_positions)
     if shelf_layout:
         # Полупрозрачные зоны + жирные контуры, чтобы полки были заметны на любом фоне.
@@ -173,6 +196,12 @@ def _save_reference_positions_sku(
     shelf_rows = [int(s["count"]) for s in shelf_layout]
     marked_name = "annotated.jpg"
     draw_img.save(str(run_dir / marked_name), format="JPEG", quality=92)
+    logger.info(
+        "reference: шаг эталона завершён за %.1f с (детекция+кропы+разметка): полок=%d annotated=%s",
+        time.perf_counter() - t0,
+        len(shelf_layout),
+        marked_name,
+    )
     return {
         "positions_count": len(saved_positions),
         "shelf_count": len(shelf_rows),
@@ -875,6 +904,7 @@ async def save_reference(
     sku: str = Form(...),
     reference_image: UploadFile = File(...),
 ) -> JSONResponse:
+    req_t0 = time.perf_counter()
     sku_key = sku.strip()
     if not sku_key:
         return JSONResponse({"ok": False, "error": "Название разметки не задано"}, status_code=400)
@@ -883,13 +913,26 @@ async def save_reference(
     if not img_bytes:
         return JSONResponse({"ok": False, "error": "Пустой файл эталона"}, status_code=400)
 
+    orig_name = reference_image.filename or "reference.jpg"
+    logger.info(
+        "POST /reference/save sku=%r file=%r bytes=%d",
+        sku_key,
+        orig_name,
+        len(img_bytes),
+    )
+
     img = _load_normalized_rgb_image(img_bytes)
+    logger.info(
+        "reference: изображение нормализовано %sx%s",
+        img.width,
+        img.height,
+    )
     detector = _sku_detector()
 
-    orig_name = reference_image.filename or "reference.jpg"
     run_dir = _make_unique_run_dir("reference", orig_name)
     input_path = run_dir / "input.jpg"
     img.save(str(input_path), format="JPEG", quality=92)
+    logger.info("reference: сохранён input.jpg run_dir=%s", run_dir)
     try:
         ref_positions_meta = _save_reference_positions_sku(
             img=img,
@@ -898,6 +941,7 @@ async def save_reference(
             run_dir=run_dir,
         )
     except Exception as exc:  # noqa: BLE001
+        logger.exception("POST /reference/save: ошибка SKU110K после %.1f с", time.perf_counter() - req_t0)
         return JSONResponse({"ok": False, "error": f"SKU110K ошибка: {exc}"}, status_code=400)
 
     record = {
@@ -931,6 +975,13 @@ async def save_reference(
     _db_set_sku_runs(db, sku_key, runs)
     _db_save(db)
     visual = _record_visual(record)
+    logger.info(
+        "POST /reference/save ok sku=%r positions=%d за %.1f с result_dir=%s",
+        sku_key,
+        int(ref_positions_meta.get("positions_count", 0)),
+        time.perf_counter() - req_t0,
+        record.get("result_dir", ""),
+    )
     return JSONResponse(
         {
             "ok": True,
@@ -1029,6 +1080,7 @@ async def recognize_reference_crops(
     reference_result_dir: str = Form(...),
 ) -> JSONResponse:
     """Шаг 2: кропы из выбранного разбора (шаг 1) → LM Studio, без отдельного фото стеллажа."""
+    req_t0 = time.perf_counter()
     sku_key = sku.strip()
     if not sku_key:
         return JSONResponse({"ok": False, "error": "Название распознавания не задано"}, status_code=400)
@@ -1036,6 +1088,12 @@ async def recognize_reference_crops(
     selected_dir = reference_result_dir.strip()
     if not selected_dir:
         return JSONResponse({"ok": False, "error": "Выберите сохранённый разбор (reference_result_dir)"}, status_code=400)
+
+    logger.info(
+        "POST /recognize sku=%r reference_result_dir=%r",
+        sku_key,
+        selected_dir,
+    )
 
     reference = _resolve_reference_record(selected_dir)
     if reference is None:
@@ -1073,6 +1131,12 @@ async def recognize_reference_crops(
         base_url=os.getenv("LMSTUDIO_URL", DEFAULT_LMSTUDIO_URL),
         model=os.getenv("LMSTUDIO_MODEL", DEFAULT_LMSTUDIO_MODEL),
         timeout_sec=lm_timeout,
+    )
+    logger.info(
+        "recognize: LM base_url=%s model=%s timeout_sec=%s",
+        os.getenv("LMSTUDIO_URL", DEFAULT_LMSTUDIO_URL),
+        os.getenv("LMSTUDIO_MODEL", DEFAULT_LMSTUDIO_MODEL),
+        lm_timeout,
     )
 
     stem = f"{sku_key}_{ref_run_id}"
@@ -1132,12 +1196,27 @@ async def recognize_reference_crops(
 
     batch_single = _truthy_env("LM_BATCH_CLASSIFY_SINGLE_REQUEST", default="1")
     shared_group = _truthy_env("LM_SHARED_CLASSIFY_PER_SIMILARITY_GROUP")
+    logger.info(
+        "recognize: кропов для LM=%d concurrent=%d batch_single=%s shared_group=%s sim_th=%s ref_run=%s",
+        len(crops_for_lm),
+        concurrent,
+        batch_single,
+        shared_group,
+        sim_th,
+        ref_run_id,
+    )
+    t_lm = time.perf_counter()
     if batch_single and crops_for_lm:
         lm_results = lm.classify_crops_batch_chunked(crops_for_lm)
     elif shared_group and crops_for_lm:
         lm_results = _classify_crops_shared_groups(lm, crops_for_lm, concurrent, sim_th)
     else:
         lm_results = _classify_crops_parallel(lm, crops_for_lm, concurrent)
+    logger.info(
+        "recognize: вызовы LM завершены за %.1f с (ответов=%d)",
+        time.perf_counter() - t_lm,
+        len(lm_results),
+    )
 
     per_position: list[dict[str, Any]] = []
     for task, lm_res in zip(tasks, lm_results, strict=True):
@@ -1213,6 +1292,12 @@ async def recognize_reference_crops(
         encoding="utf-8",
     )
 
+    logger.info(
+        "POST /recognize ok positions_lm=%d за %.1f с result_dir=%s",
+        len(per_position),
+        time.perf_counter() - req_t0,
+        rel_to_base,
+    )
     return JSONResponse(payload)
 
 
@@ -1235,6 +1320,7 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
       }
     }
     """
+    req_t0 = time.perf_counter()
     payload = await request.json()
     if not isinstance(payload, dict):
         return JSONResponse({"ok": False, "error": "JSON payload expected"}, status_code=400)
@@ -1250,6 +1336,8 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
             status_code=404,
         )
 
+    logger.info("POST /compliance/check reference_result_dir=%r", ref_dir)
+
     try:
         reference_planogram_payload = payload.get("reference_planogram", {})
         sku_catalog_payload = payload.get("sku_catalog", {})
@@ -1259,6 +1347,12 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
         catalog = parse_sku_catalog(sku_catalog_payload)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    logger.info(
+        "compliance: слотов в эталоне=%d позиций SKU в каталоге=%d",
+        len(reference_slots),
+        len(catalog),
+    )
 
     opts = payload.get("options", {})
     if not isinstance(opts, dict):
@@ -1276,7 +1370,9 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "No positions in reference_result_dir"}, status_code=400)
 
     try:
+        t_emb = time.perf_counter()
         ref_embeddings = build_reference_embeddings(catalog, base_dir=BASE_DIR)
+        logger.info("compliance: эмбеддинги референсов за %.1f с", time.perf_counter() - t_emb)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     similar_groups = infer_similar_sku_groups(catalog)
@@ -1288,6 +1384,7 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
         full_img = full_img.copy()
 
     observed_positions: list[dict[str, Any]] = []
+    t_match = time.perf_counter()
     for pos in positions_src:
         if not isinstance(pos, dict):
             continue
@@ -1326,6 +1423,12 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
             }
         )
 
+    logger.info(
+        "compliance: сопоставление кропов завершено за %.1f с позиций=%d",
+        time.perf_counter() - t_match,
+        len(observed_positions),
+    )
+
     observed_runs = build_observed_planogram(observed_positions)
     by_slot_run = {(int(r["shelf_id"]), int(r["slot_index"])): r for r in observed_runs}
     for p in observed_positions:
@@ -1358,6 +1461,13 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
         "uncertainty_flags": uncertainty_flags,
         "observed_positions": observed_positions,
     }
+    logger.info(
+        "POST /compliance/check ok score=%.2f status=%s за %.1f с deviations=%d",
+        score,
+        result["status"],
+        time.perf_counter() - req_t0,
+        len(metrics["deviations"]),
+    )
     return JSONResponse(result)
 
 
