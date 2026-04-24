@@ -17,6 +17,8 @@
       --primary-hover: #245aeb;
       --shadow-soft: 0 10px 30px rgba(39, 68, 130, 0.08);
       --shadow-strong: 0 14px 34px rgba(39, 68, 130, 0.16);
+      --sidebar-min: 320px;
+      --sidebar-max: 58vw;
     }
 
     html, body { width: 100%; height: 100%; margin: 0; padding: 0; }
@@ -31,13 +33,77 @@
     * { box-sizing: border-box; }
 
     .layout {
-      display: grid;
-      grid-template-columns: 360px 1fr;
+      display: flex;
       gap: 16px;
       height: 100vh;
       padding: 16px;
     }
-    .left-col, .right-col { min-height: 0; overflow: auto; }
+    .flow-card {
+      border: 1px solid #cfe0ff;
+      border-radius: 14px;
+      padding: 12px;
+      background: linear-gradient(135deg, #f1f6ff, #f9fbff);
+      margin-bottom: 14px;
+    }
+    .flow-title { font-size: 14px; font-weight: 700; color: #2a4c9f; margin-bottom: 10px; }
+    .flow-steps { display: grid; gap: 8px; }
+    .flow-step {
+      display: grid;
+      grid-template-columns: 26px 1fr;
+      gap: 8px;
+      align-items: start;
+      color: #314266;
+      font-size: 13px;
+    }
+    .flow-badge {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: #356dff;
+      color: #fff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+    }
+    .left-col {
+      min-height: 0;
+      overflow: auto;
+      width: 420px;
+      min-width: var(--sidebar-min);
+      max-width: var(--sidebar-max);
+      resize: none;
+    }
+    .sidebar-resizer {
+      width: 10px;
+      cursor: col-resize;
+      flex: 0 0 10px;
+      position: relative;
+      border-radius: 8px;
+      background: transparent;
+      user-select: none;
+      touch-action: none;
+    }
+    .sidebar-resizer::before {
+      content: "";
+      position: absolute;
+      top: 10px;
+      bottom: 10px;
+      left: 4px;
+      width: 2px;
+      border-radius: 2px;
+      background: #c6d5f7;
+    }
+    .sidebar-resizer:hover::before,
+    .sidebar-resizer.dragging::before {
+      background: #5b84f0;
+    }
+    .right-col {
+      min-height: 0;
+      overflow: auto;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
     .card {
       border: 1px solid var(--border-soft);
       border-radius: 14px;
@@ -54,6 +120,8 @@
       box-shadow: var(--shadow-strong);
     }
     .row { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    .row-2 { grid-template-columns: 1fr 1fr; }
+    .row-3 { grid-template-columns: repeat(3, 1fr); }
     label { display: block; font-size: 13px; margin-bottom: 4px; color: #415172; font-weight: 600; }
     input, button, select, textarea {
       width: 100%;
@@ -89,7 +157,59 @@
     }
     button:hover { background: linear-gradient(135deg, var(--primary-hover), #4f7af0); }
     button:active { transform: translateY(1px); }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+      box-shadow: none;
+      background: #9db2e6;
+    }
     .hint { color: var(--text-muted); font-size: 12px; margin-top: 0; }
+    .soft-box {
+      border: 1px solid #dbe5ff;
+      border-radius: 10px;
+      background: #f6f9ff;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      color: #334a7a;
+    }
+    details.advanced {
+      border: 1px dashed #c7d7ff;
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: #fbfdff;
+    }
+    details.advanced > summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: #35539a;
+      user-select: none;
+    }
+    .step-lock {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #5b6e97;
+    }
+    .step-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .step-chip {
+      min-width: 34px;
+      height: 24px;
+      border-radius: 999px;
+      background: #e7efff;
+      color: #245aeb;
+      font-size: 12px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 10px;
+      border: 1px solid #cddcff;
+    }
     .preview-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .preview-zoom-wrap {
       overflow: hidden;
@@ -101,6 +221,9 @@
       cursor: zoom-in;
       box-shadow: inset 0 0 0 1px rgba(255,255,255,0.4);
     }
+    .preview-zoom-wrap.zoom-wheel-active {
+      cursor: zoom-out;
+    }
     .preview-zoom-wrap img {
       width: 100%;
       height: 100%;
@@ -109,7 +232,93 @@
       transform-origin: 50% 50%;
       will-change: transform;
     }
+    .preview-zoom-wrap img.compliance-clickable {
+      cursor: pointer;
+    }
     .img-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+    .shelf-compare-wrap {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .shelf-strip-card {
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      background: linear-gradient(180deg, #fff, #f8fbff);
+      padding: 8px;
+    }
+    .shelf-strip-head {
+      font-size: 12px;
+      color: #31456f;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .shelf-strip-scroll {
+      overflow-x: auto;
+      border: 1px solid #e4ebfb;
+      border-radius: 8px;
+      background: #fff;
+      padding: 6px;
+    }
+    .shelf-strip-scroll img {
+      display: block;
+      width: auto;
+      max-width: none;
+      height: 290px;
+      border-radius: 6px;
+    }
+    .mismatch-list {
+      margin-top: 8px;
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      background: #fbfdff;
+      padding: 8px 10px;
+      max-height: 180px;
+      overflow: auto;
+      font-size: 12px;
+      color: #384c74;
+      white-space: pre-wrap;
+    }
+    .mismatch-list b {
+      color: #1f335f;
+    }
+    .slot-compare-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .slot-compare-col {
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      background: #f8fbff;
+      padding: 8px;
+      font-size: 12px;
+    }
+    .slot-compare-col h5 {
+      margin: 0 0 6px 0;
+      font-size: 13px;
+      color: #284276;
+    }
+    .list-toolbar {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin: 8px 0 10px;
+    }
+    .group-block {
+      margin-bottom: 10px;
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      padding: 8px;
+      background: #fbfdff;
+    }
+    .group-title {
+      font-size: 12px;
+      color: #304677;
+      font-weight: 700;
+      margin: 0 0 8px 0;
+    }
     .crop-card {
       border: 1px solid var(--border-soft);
       border-radius: 10px;
@@ -176,6 +385,17 @@
       color: #333;
     }
     .modal-close:hover { background: #dde8ff; }
+    .modal-nav {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .modal-nav button {
+      width: auto;
+      min-width: 120px;
+      padding: 8px 10px;
+    }
     #cropDetailImg {
       display: block;
       max-width: 100%;
@@ -215,6 +435,22 @@
       line-height: 1.4;
       box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
     }
+    .zone-box {
+      margin-top: 8px;
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      padding: 10px;
+      background: #f8fbff;
+    }
+    #zonePickerCanvas {
+      width: 100%;
+      max-height: 260px;
+      border: 1px dashed var(--border-strong);
+      border-radius: 8px;
+      background: #ffffff;
+      display: block;
+      cursor: crosshair;
+    }
     pre {
       margin: 0;
       background: #0f172a;
@@ -239,24 +475,43 @@
     }
 
     @media (max-width: 1100px) {
-      .layout { grid-template-columns: 1fr; height: auto; }
+      .layout { display: block; height: auto; }
+      .left-col {
+        width: 100%;
+        max-width: none;
+        min-width: 0;
+        resize: none;
+      }
+      .sidebar-resizer { display: none; }
       .preview-row { grid-template-columns: 1fr; }
       .preview-zoom-wrap { height: 24vh; }
       pre { max-height: 40vh; }
+      .row-2, .row-3 { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <div class="layout">
-    <div class="left-col">
+    <div class="left-col" id="leftCol">
       <div class="card">
         <h1>Анализ товаров</h1>
         <p class="hint">Каталог разметок: <code>{{ reference_db_path }}</code><br>Результаты: <code>{{ sku_results_dir }}</code></p>
         <p><a href="/planogram/editor" style="color:#245aeb;font-weight:600;text-decoration:none">Открыть экран редактора эталонных позиций и планограммы →</a></p>
       </div>
+      <div class="flow-card">
+        <div class="flow-title">Как пройти сценарий проверки</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-badge">1</span><span>Загрузите фото и сохраните разбор полки.</span></div>
+          <div class="flow-step"><span class="flow-badge">2</span><span>Выберите разбор и запустите распознавание позиций в LM Studio.</span></div>
+          <div class="flow-step"><span class="flow-badge">3</span><span>Подгрузите планограмму, проверьте соответствие и смотрите красные зоны ошибок.</span></div>
+        </div>
+      </div>
 
       <div class="card">
-        <h2>Шаг 1: Разметка фото</h2>
+        <div class="step-head">
+          <span class="step-chip">ШАГ 1</span>
+          <h2 style="margin:0">Разметка фото</h2>
+        </div>
         <form id="referenceForm">
           <div class="row">
             <div>
@@ -267,6 +522,19 @@
               <label for="referenceImage">Фото для разбора</label>
               <input id="referenceImage" name="reference_image" type="file" accept="image/*" required>
             </div>
+          </div>
+          <div class="zone-box">
+            <label style="display:flex;align-items:center;gap:8px;font-weight:600">
+              <input id="useOwnZoneCheckbox" type="checkbox" style="width:auto;transform:scale(1.05)">
+              Ограничить «нашу зону» (шаг 1)
+            </label>
+            <p class="hint" style="margin:6px 0 8px 0">Товары вне зоны тоже распознаются, но будут помечены как <code>foreign</code>.</p>
+            <input id="ownZoneNormInput" name="our_zone_norm" type="hidden" value="">
+            <canvas id="zonePickerCanvas" width="640" height="360" aria-label="Выбор зоны своих товаров"></canvas>
+            <div class="muted" id="zoneSelectionInfo" style="margin-top:6px">Зона не выбрана.</div>
+            <p style="margin:8px 0 0 0">
+              <button type="button" id="resetOwnZoneBtn">Сбросить зону</button>
+            </p>
           </div>
           <p><button type="submit">Разобрать и сохранить</button></p>
         </form>
@@ -286,7 +554,10 @@
       </div>
 
       <div class="card">
-        <h2>Шаг 2: Распознавание позиций (LM Studio)</h2>
+        <div class="step-head">
+          <span class="step-chip">ШАГ 2</span>
+          <h2 style="margin:0">Распознавание позиций (LM Studio)</h2>
+        </div>
         <p class="hint">Берутся кропы из выбранного разбора (шаг 1), отдельное фото не нужно.</p>
         <form id="recognizeForm">
           <div class="row">
@@ -301,7 +572,8 @@
               </select>
             </div>
           </div>
-          <p><button type="submit">Распознать в LM Studio</button></p>
+          <p><button id="recognizeSubmitBtn" type="submit">Распознать в LM Studio</button></p>
+          <div class="step-lock" id="step2LockHint"></div>
         </form>
 
         <div class="row">
@@ -318,9 +590,15 @@
       </div>
 
       <div class="card">
-        <h2>Шаг 3: Проверка соответствия эталону</h2>
+        <div class="step-head">
+          <span class="step-chip">ШАГ 3</span>
+          <h2 style="margin:0">Проверка соответствия эталону</h2>
+        </div>
         <p class="hint">Сравнение по <code>presence/position/facings</code> с explainable-отчётом по отклонениям.</p>
         <form id="complianceForm">
+          <div class="soft-box">
+            Простой режим: выберите разбор шага 1 и планограмму, затем нажмите «Проверить соответствие». Остальные параметры можно не менять.
+          </div>
           <div class="row">
             <div>
               <label for="complianceReferenceResultDir">Сохранённый разбор (шаг 1)</label>
@@ -345,7 +623,7 @@
               <button type="button" id="loadCompliancePlanogramBtn">Подставить JSON из выбранной</button>
             </div>
           </div>
-          <div class="row">
+          <div class="row row-2">
             <div>
               <label for="referencePlanogramJson">Эталонная планограмма (JSON)</label>
               <textarea id="referencePlanogramJson" spellcheck="false"></textarea>
@@ -355,57 +633,62 @@
               <textarea id="skuCatalogJson" spellcheck="false"></textarea>
             </div>
           </div>
-          <div class="row">
-            <div>
-              <label for="complianceConfidenceThreshold">Confidence threshold</label>
-              <input id="complianceConfidenceThreshold" type="number" min="0" max="1" step="0.01" value="0.62">
+          <details class="advanced" id="complianceAdvancedParams">
+            <summary>Расширенные настройки (опционально)</summary>
+            <div class="row row-2" style="margin-top:10px">
+              <div>
+                <label for="complianceConfidenceThreshold">Confidence threshold</label>
+                <input id="complianceConfidenceThreshold" type="number" min="0" max="1" step="0.01" value="0.62">
+              </div>
+              <div>
+                <label for="complianceLlmNameWeight">Вес текстового hint (LLM)</label>
+                <input id="complianceLlmNameWeight" type="number" min="0" max="1" step="0.01" value="0.12">
+              </div>
             </div>
-            <div>
-              <label for="complianceLlmNameWeight">Вес текстового hint (LLM)</label>
-              <input id="complianceLlmNameWeight" type="number" min="0" max="1" step="0.01" value="0.12">
+            <div class="row row-2">
+              <div>
+                <label for="complianceMatchingLevel">Уровень сравнения</label>
+                <select id="complianceMatchingLevel">
+                  <option value="sku_only">Только SKU</option>
+                  <option value="brand_level">SKU + уровень бренда</option>
+                </select>
+              </div>
+              <div>
+                <label for="complianceForeignPolicy">Политика чужих товаров</label>
+                <select id="complianceForeignPolicy">
+                  <option value="hard_fail">Всегда нарушение (штраф)</option>
+                  <option value="soft_substitute">Мягкая замена бренда</option>
+                  <option value="info_only" selected>Только информативно (без штрафа)</option>
+                </select>
+              </div>
             </div>
-          </div>
-          <div class="row">
-            <div>
-              <label for="complianceMatchingLevel">Уровень сравнения</label>
-              <select id="complianceMatchingLevel">
-                <option value="sku_only">Только SKU</option>
-                <option value="brand_level">SKU + уровень бренда</option>
-              </select>
+            <div class="row">
+              <div>
+                <label for="idealSimilarityThreshold">Порог похожести на идеальную позицию</label>
+                <input id="idealSimilarityThreshold" type="number" min="0" max="1" step="0.01" value="0.55">
+              </div>
             </div>
-            <div>
-              <label for="complianceForeignPolicy">Политика чужих товаров</label>
-              <select id="complianceForeignPolicy">
-                <option value="hard_fail">Всегда нарушение (штраф)</option>
-                <option value="soft_substitute">Мягкая замена бренда</option>
-                <option value="info_only" selected>Только информативно (без штрафа)</option>
-              </select>
+            <div class="row row-3">
+              <div>
+                <label for="presenceWeight">presence_weight</label>
+                <input id="presenceWeight" type="number" min="0" max="1" step="0.01" value="0.40">
+              </div>
+              <div>
+                <label for="positionWeight">position_weight</label>
+                <input id="positionWeight" type="number" min="0" max="1" step="0.01" value="0.35">
+              </div>
+              <div>
+                <label for="facingsWeight">facings_weight</label>
+                <input id="facingsWeight" type="number" min="0" max="1" step="0.01" value="0.25">
+              </div>
             </div>
-          </div>
-          <div class="row">
-            <div>
-              <label for="idealSimilarityThreshold">Порог похожести на идеальную позицию</label>
-              <input id="idealSimilarityThreshold" type="number" min="0" max="1" step="0.01" value="0.55">
-            </div>
-          </div>
-          <div class="row">
-            <div>
-              <label for="presenceWeight">presence_weight</label>
-              <input id="presenceWeight" type="number" min="0" max="1" step="0.01" value="0.40">
-            </div>
-            <div>
-              <label for="positionWeight">position_weight</label>
-              <input id="positionWeight" type="number" min="0" max="1" step="0.01" value="0.35">
-            </div>
-            <div>
-              <label for="facingsWeight">facings_weight</label>
-              <input id="facingsWeight" type="number" min="0" max="1" step="0.01" value="0.25">
-            </div>
-          </div>
-          <p><button type="submit">Проверить соответствие</button></p>
+          </details>
+          <p><button id="complianceSubmitBtn" type="submit">Проверить соответствие</button></p>
+          <div class="step-lock" id="step3LockHint"></div>
         </form>
       </div>
     </div>
+    <div class="sidebar-resizer" id="sidebarResizer" aria-hidden="true" title="Потяните, чтобы изменить ширину панели"></div>
 
     <div class="right-col">
       <div class="card" id="referenceVisual" style="display:none">
@@ -426,11 +709,35 @@
           </div>
         </div>
         <h4 id="cropsSectionTitle">Кропы позиций</h4>
+        <div id="lmCropsControls" class="list-toolbar" style="display:none">
+          <div>
+            <label for="lmNameFilterSelect">Показывать только название</label>
+            <select id="lmNameFilterSelect">
+              <option value="__all__">Все названия</option>
+            </select>
+          </div>
+        </div>
         <div id="refCrops" class="img-grid"></div>
       </div>
 
       <div class="card">
         <h3>Шаг 3: Результат соответствия</h3>
+        <div class="preview-row" id="complianceVisualRow" style="margin-bottom:10px;display:none">
+          <div class="preview">
+            <div class="muted">Эталонная выкладка (шаг 1)</div>
+            <div class="preview-zoom-wrap" title="Эталонная выкладка из выбранного разбора">
+              <img id="complianceReferenceImg" alt="Эталонная выкладка">
+            </div>
+          </div>
+          <div class="preview">
+            <div class="muted">Разметка шага 3 (красный = нарушение)</div>
+            <div class="preview-zoom-wrap" title="Красные прямоугольники показывают неправильные объекты">
+              <img id="complianceAnnotatedImg" alt="Разметка соответствия">
+            </div>
+          </div>
+        </div>
+        <div id="complianceShelfCompareWrap" class="shelf-compare-wrap" style="display:none"></div>
+        <div id="complianceMismatchList" class="mismatch-list" style="display:none"></div>
         <div id="complianceResult" class="muted">Запустите проверку шага 3.</div>
       </div>
 
@@ -446,20 +753,61 @@
     <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="cropDetailTitle">
       <button type="button" class="modal-close" id="cropDetailClose" aria-label="Закрыть">×</button>
       <h4 id="cropDetailTitle" style="margin: 0 40px 12px 0; font-size: 16px;">Позиция</h4>
+      <div class="modal-nav">
+        <button type="button" id="cropDetailPrevBtn">← Предыдущая</button>
+        <button type="button" id="cropDetailNextBtn">Следующая →</button>
+      </div>
       <img id="cropDetailImg" alt="">
       <div id="cropDetailText" class="crop-detail-text"></div>
+    </div>
+  </div>
+
+  <div id="slotCompareModal" class="modal" style="display:none" aria-hidden="true">
+    <div class="modal-backdrop" id="slotCompareBackdrop"></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="slotCompareTitle">
+      <button type="button" class="modal-close" id="slotCompareClose" aria-label="Закрыть">×</button>
+      <h4 id="slotCompareTitle" style="margin: 0 40px 8px 0; font-size: 16px;">Сравнение позиции</h4>
+      <div id="slotCompareSummary" class="muted"></div>
+      <div id="slotCompareBody" class="slot-compare-grid"></div>
     </div>
   </div>
 
   <script>
     const output = document.getElementById("output");
     const PREVIEW_ZOOM_SCALE = 2.1;
+    const PREVIEW_ZOOM_WHEEL_MIN = 1.0;
+    const PREVIEW_ZOOM_WHEEL_MAX = 8.0;
+    const PREVIEW_ZOOM_WHEEL_STEP = 0.24;
+    const zoneState = {
+      image: null,
+      norm: null,
+      drawing: false,
+      startX: 0,
+      startY: 0,
+      curX: 0,
+      curY: 0,
+    };
+    const cropModalState = {
+      kind: "reference",
+      items: [],
+      index: -1,
+    };
+    const visualState = {
+      kind: "reference",
+      list: [],
+    };
+    const complianceClickState = {
+      slots: [],
+      observedByIndex: {},
+    };
+    const SIDEBAR_STORAGE_KEY = "merch_sidebar_width_px";
 
     function setupPreviewZoomFollow() {
       document.querySelectorAll(".preview-zoom-wrap").forEach((wrap) => {
         const img = wrap.querySelector("img");
         if (!img || wrap.dataset.zoomBound === "1") return;
         wrap.dataset.zoomBound = "1";
+        wrap.dataset.zoomScale = String(PREVIEW_ZOOM_SCALE);
 
         function applyZoom(e) {
           const rect = wrap.getBoundingClientRect();
@@ -470,18 +818,243 @@
           x = Math.max(0, Math.min(100, x));
           y = Math.max(0, Math.min(100, y));
           img.style.transformOrigin = `${x}% ${y}%`;
-          img.style.transform = `scale(${PREVIEW_ZOOM_SCALE})`;
+          const currentScale = Number(wrap.dataset.zoomScale || PREVIEW_ZOOM_SCALE);
+          img.style.transform = `scale(${currentScale})`;
         }
 
         function clearZoom() {
-          img.style.transform = "";
+          wrap.classList.remove("zoom-wheel-active");
+          wrap.dataset.zoomScale = String(PREVIEW_ZOOM_SCALE);
+          img.style.transform = `scale(${PREVIEW_ZOOM_SCALE})`;
           img.style.transformOrigin = "50% 50%";
+        }
+
+        function applyWheelZoom(e) {
+          e.preventDefault();
+          const prev = Number(wrap.dataset.zoomScale || PREVIEW_ZOOM_SCALE);
+          const dir = e.deltaY < 0 ? 1 : -1;
+          const next = Math.max(
+            PREVIEW_ZOOM_WHEEL_MIN,
+            Math.min(PREVIEW_ZOOM_WHEEL_MAX, prev + dir * PREVIEW_ZOOM_WHEEL_STEP),
+          );
+          wrap.dataset.zoomScale = String(next);
+          wrap.classList.toggle("zoom-wheel-active", next > PREVIEW_ZOOM_SCALE);
+          applyZoom(e);
         }
 
         wrap.addEventListener("pointerenter", applyZoom);
         wrap.addEventListener("pointermove", applyZoom);
         wrap.addEventListener("pointerleave", clearZoom);
+        wrap.addEventListener("wheel", applyWheelZoom, { passive: false });
       });
+    }
+
+    function setupSidebarResize() {
+      const resizer = document.getElementById("sidebarResizer");
+      const leftCol = document.getElementById("leftCol");
+      if (!resizer || !leftCol) return;
+      const minW = 320;
+      function maxW() {
+        return Math.max(minW + 40, Math.round(window.innerWidth * 0.68));
+      }
+      const saved = Number(localStorage.getItem(SIDEBAR_STORAGE_KEY) || 0);
+      if (Number.isFinite(saved) && saved >= minW) {
+        leftCol.style.width = `${Math.min(saved, maxW())}px`;
+      }
+      let dragging = false;
+      function clamp(v) {
+        return Math.max(minW, Math.min(maxW(), Math.round(v)));
+      }
+      function apply(clientX) {
+        const layoutRect = document.querySelector(".layout")?.getBoundingClientRect();
+        if (!layoutRect) return;
+        const next = clamp(clientX - layoutRect.left - 16);
+        leftCol.style.width = `${next}px`;
+        localStorage.setItem(SIDEBAR_STORAGE_KEY, String(next));
+      }
+      resizer.addEventListener("pointerdown", (e) => {
+        if (window.innerWidth <= 1100) return;
+        dragging = true;
+        resizer.classList.add("dragging");
+        resizer.setPointerCapture(e.pointerId);
+        apply(e.clientX);
+      });
+      resizer.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        apply(e.clientX);
+      });
+      function stopDrag(e) {
+        if (!dragging) return;
+        dragging = false;
+        resizer.classList.remove("dragging");
+        if (e && e.pointerId != null) {
+          try { resizer.releasePointerCapture(e.pointerId); } catch (_err) {}
+        }
+      }
+      resizer.addEventListener("pointerup", stopDrag);
+      resizer.addEventListener("pointercancel", stopDrag);
+      window.addEventListener("resize", () => {
+        const current = parseInt(leftCol.style.width || "420", 10);
+        if (Number.isFinite(current)) {
+          leftCol.style.width = `${clamp(current)}px`;
+        }
+      });
+    }
+
+    function _clamp01(v) {
+      return Math.max(0, Math.min(1, Number(v) || 0));
+    }
+
+    function _zoneCanvasToNorm(x1, y1, x2, y2, canvas) {
+      const nx1 = _clamp01(Math.min(x1, x2) / Math.max(1, canvas.width));
+      const ny1 = _clamp01(Math.min(y1, y2) / Math.max(1, canvas.height));
+      const nx2 = _clamp01(Math.max(x1, x2) / Math.max(1, canvas.width));
+      const ny2 = _clamp01(Math.max(y1, y2) / Math.max(1, canvas.height));
+      if (nx2 - nx1 < 0.01 || ny2 - ny1 < 0.01) return null;
+      return { x1: nx1, y1: ny1, x2: nx2, y2: ny2 };
+    }
+
+    function updateOwnZoneInputAndInfo() {
+      const hidden = document.getElementById("ownZoneNormInput");
+      const info = document.getElementById("zoneSelectionInfo");
+      if (zoneState.norm) {
+        hidden.value = JSON.stringify(zoneState.norm);
+        info.textContent =
+          `Зона: x1=${zoneState.norm.x1.toFixed(3)}, y1=${zoneState.norm.y1.toFixed(3)}, ` +
+          `x2=${zoneState.norm.x2.toFixed(3)}, y2=${zoneState.norm.y2.toFixed(3)}`;
+      } else {
+        hidden.value = "";
+        info.textContent = "Зона не выбрана.";
+      }
+    }
+
+    function renderZoneCanvas() {
+      const canvas = document.getElementById("zonePickerCanvas");
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (zoneState.image) {
+        ctx.drawImage(zoneState.image, 0, 0, canvas.width, canvas.height);
+      } else {
+        ctx.fillStyle = "#f5f8ff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#607094";
+        ctx.font = "14px Segoe UI";
+        ctx.fillText("Загрузите фото для выбора зоны", 16, 28);
+      }
+      if (zoneState.norm) {
+        const zx1 = zoneState.norm.x1 * canvas.width;
+        const zy1 = zoneState.norm.y1 * canvas.height;
+        const zw = (zoneState.norm.x2 - zoneState.norm.x1) * canvas.width;
+        const zh = (zoneState.norm.y2 - zoneState.norm.y1) * canvas.height;
+        ctx.fillStyle = "rgba(53, 109, 255, 0.18)";
+        ctx.strokeStyle = "#245aeb";
+        ctx.lineWidth = 2;
+        ctx.fillRect(zx1, zy1, zw, zh);
+        ctx.strokeRect(zx1, zy1, zw, zh);
+      }
+      if (zoneState.drawing) {
+        const draft = _zoneCanvasToNorm(zoneState.startX, zoneState.startY, zoneState.curX, zoneState.curY, canvas);
+        if (draft) {
+          const zx1 = draft.x1 * canvas.width;
+          const zy1 = draft.y1 * canvas.height;
+          const zw = (draft.x2 - draft.x1) * canvas.width;
+          const zh = (draft.y2 - draft.y1) * canvas.height;
+          ctx.fillStyle = "rgba(255, 149, 0, 0.18)";
+          ctx.strokeStyle = "#e07a00";
+          ctx.lineWidth = 2;
+          ctx.fillRect(zx1, zy1, zw, zh);
+          ctx.strokeRect(zx1, zy1, zw, zh);
+        }
+      }
+    }
+
+    function resetOwnZoneSelection() {
+      zoneState.norm = null;
+      updateOwnZoneInputAndInfo();
+      renderZoneCanvas();
+    }
+
+    function setupOwnZonePicker() {
+      const canvas = document.getElementById("zonePickerCanvas");
+      const fileInput = document.getElementById("referenceImage");
+      const zoneCheckbox = document.getElementById("useOwnZoneCheckbox");
+      const resetBtn = document.getElementById("resetOwnZoneBtn");
+
+      function canvasCoords(e) {
+        const rect = canvas.getBoundingClientRect();
+        const sx = canvas.width / Math.max(1, rect.width);
+        const sy = canvas.height / Math.max(1, rect.height);
+        return {
+          x: (e.clientX - rect.left) * sx,
+          y: (e.clientY - rect.top) * sy,
+        };
+      }
+
+      fileInput.addEventListener("change", () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) {
+          zoneState.image = null;
+          resetOwnZoneSelection();
+          return;
+        }
+        const objectUrl = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          zoneState.image = img;
+          resetOwnZoneSelection();
+          URL.revokeObjectURL(objectUrl);
+        };
+        img.onerror = () => {
+          zoneState.image = null;
+          resetOwnZoneSelection();
+          URL.revokeObjectURL(objectUrl);
+        };
+        img.src = objectUrl;
+      });
+
+      canvas.addEventListener("mousedown", (e) => {
+        if (!zoneCheckbox.checked) return;
+        const p = canvasCoords(e);
+        zoneState.drawing = true;
+        zoneState.startX = p.x;
+        zoneState.startY = p.y;
+        zoneState.curX = p.x;
+        zoneState.curY = p.y;
+        renderZoneCanvas();
+      });
+      canvas.addEventListener("mousemove", (e) => {
+        if (!zoneState.drawing) return;
+        const p = canvasCoords(e);
+        zoneState.curX = p.x;
+        zoneState.curY = p.y;
+        renderZoneCanvas();
+      });
+      canvas.addEventListener("mouseup", () => {
+        if (!zoneState.drawing) return;
+        zoneState.drawing = false;
+        zoneState.norm = _zoneCanvasToNorm(
+          zoneState.startX,
+          zoneState.startY,
+          zoneState.curX,
+          zoneState.curY,
+          canvas,
+        );
+        updateOwnZoneInputAndInfo();
+        renderZoneCanvas();
+      });
+      canvas.addEventListener("mouseleave", () => {
+        if (!zoneState.drawing) return;
+        zoneState.drawing = false;
+        renderZoneCanvas();
+      });
+      zoneCheckbox.addEventListener("change", () => {
+        if (!zoneCheckbox.checked) resetOwnZoneSelection();
+      });
+      resetBtn.addEventListener("click", () => {
+        resetOwnZoneSelection();
+      });
+      renderZoneCanvas();
+      updateOwnZoneInputAndInfo();
     }
 
     function setUiProgress(message) {
@@ -523,13 +1096,123 @@
 
     function renderComplianceResult(payload) {
       const node = document.getElementById("complianceResult");
+      const complianceVisualRow = document.getElementById("complianceVisualRow");
+      const complianceReferenceImg = document.getElementById("complianceReferenceImg");
+      const complianceAnnotatedImg = document.getElementById("complianceAnnotatedImg");
+      const shelfWrap = document.getElementById("complianceShelfCompareWrap");
+      const mismatchList = document.getElementById("complianceMismatchList");
+      const withCacheBust = (url) => {
+        if (!url) return "";
+        return `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`;
+      };
       if (!payload || !payload.ok) {
+        complianceVisualRow.style.display = "none";
+        complianceReferenceImg.src = "";
+        complianceAnnotatedImg.src = "";
+        complianceAnnotatedImg.classList.remove("compliance-clickable");
+        complianceAnnotatedImg.removeAttribute("title");
+        complianceClickState.slots = [];
+        complianceClickState.observedByIndex = {};
+        shelfWrap.style.display = "none";
+        shelfWrap.innerHTML = "";
+        mismatchList.style.display = "none";
+        mismatchList.innerHTML = "";
         node.innerHTML = `<span style="color:#9f1239">Ошибка: ${escapeHtml(payload?.error || "Неизвестная ошибка")}</span>`;
         return;
+      }
+      const visualOk = Boolean(payload?.visual?.annotated_url);
+      complianceVisualRow.style.display = visualOk ? "grid" : "none";
+      if (visualOk) {
+        const selected = document.getElementById("complianceReferenceResultDir");
+        const selectedOpt = selected.options[selected.selectedIndex];
+        const refAnnotated = selectedOpt?.dataset?.visualAnnotated || "";
+        complianceReferenceImg.src = withCacheBust(refAnnotated);
+      }
+      complianceAnnotatedImg.src = withCacheBust(payload?.visual?.annotated_url || "");
+      const observedPositions = Array.isArray(payload.observed_positions) ? payload.observed_positions : [];
+      const observedByIndex = {};
+      observedPositions.forEach((p) => {
+        const idx = Number(p?.index || 0);
+        if (idx > 0) observedByIndex[idx] = p;
+      });
+      const shelfCompareImages = Array.isArray(payload?.visual?.shelf_compare_images) ? payload.visual.shelf_compare_images : [];
+      if (shelfCompareImages.length) {
+        shelfWrap.style.display = "grid";
+        shelfWrap.innerHTML = shelfCompareImages.map((it) => {
+          const shelfId = Number(it?.shelf_id || 0);
+          const shift = Number(it?.alignment_shift || 0);
+          const url = withCacheBust(it?.url || "");
+          return (
+            `<div class="shelf-strip-card">` +
+            `<div class="shelf-strip-head">Полка ${shelfId} · сдвиг ${shift >= 0 ? "+" : ""}${shift}</div>` +
+            `<div class="shelf-strip-scroll"><img src="${escapeHtml(url)}" alt="Сравнение полки ${shelfId}"></div>` +
+            `</div>`
+          );
+        }).join("");
+      } else {
+        shelfWrap.style.display = "none";
+        shelfWrap.innerHTML = "";
       }
       const deviations = Array.isArray(payload.deviations) ? payload.deviations : [];
       const uncertainty = Array.isArray(payload.uncertainty_flags) ? payload.uncertainty_flags : [];
       const idealFlags = Array.isArray(payload.ideal_similarity_flags) ? payload.ideal_similarity_flags : [];
+      const alignedRows = Array.isArray(payload.aligned_slot_rows) ? payload.aligned_slot_rows : [];
+      complianceClickState.observedByIndex = observedByIndex;
+      complianceClickState.slots = alignedRows
+        .map((r) => {
+          const idx = Number(r?.observed_index || 0);
+          const obs = observedByIndex[idx];
+          const bbox = r?.observed_bbox || obs?.bbox;
+          if (!bbox || typeof bbox !== "object") return null;
+          return {
+            shelf_id: Number(r?.shelf_id || 0),
+            slot_index: Number(r?.slot_index || 0),
+            aligned_pos: Number(r?.aligned_observed_position_in_shelf || 0),
+            status: String(r?.status || ""),
+            match_ok: Boolean(r?.match_ok),
+            expected_sku_id: String(r?.expected_sku_id || ""),
+            expected_name: String(r?.expected_name || ""),
+            actual_sku_id: String(r?.actual_sku_id || ""),
+            actual_name: String(r?.actual_name || ""),
+            observed_index: idx,
+            bbox: {
+              x1: Number(bbox.x1 || 0),
+              y1: Number(bbox.y1 || 0),
+              x2: Number(bbox.x2 || 0),
+              y2: Number(bbox.y2 || 0),
+            },
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => {
+          const aa = Math.max(1, (a.bbox.x2 - a.bbox.x1) * (a.bbox.y2 - a.bbox.y1));
+          const bb = Math.max(1, (b.bbox.x2 - b.bbox.x1) * (b.bbox.y2 - b.bbox.y1));
+          return aa - bb;
+        });
+      if (complianceClickState.slots.length) {
+        complianceAnnotatedImg.classList.add("compliance-clickable");
+        complianceAnnotatedImg.title = "Кликните по позиции, чтобы увидеть карточку сравнения";
+      } else {
+        complianceAnnotatedImg.classList.remove("compliance-clickable");
+        complianceAnnotatedImg.removeAttribute("title");
+      }
+      const mismatchRows = alignedRows.filter((r) => !Boolean(r?.match_ok));
+      if (mismatchRows.length) {
+        mismatchList.style.display = "block";
+        const text = mismatchRows.slice(0, 120).map((r) => {
+          const shelf = Number(r?.shelf_id || 0);
+          const slot = Number(r?.slot_index || 0);
+          const obsPos = Number(r?.aligned_observed_position_in_shelf || 0);
+          const exp = String(r?.expected_sku_id || "—");
+          const act = String(r?.actual_sku_id || "empty");
+          const status = String(r?.status || "mismatch");
+          return `• П${shelf}/С${slot} → pos ${obsPos}: ${exp} vs ${act} [${status}]`;
+        }).join("\n");
+        mismatchList.innerHTML = `<b>Проблемные слоты (после выравнивания):</b>\n${escapeHtml(text)}`;
+      } else {
+        mismatchList.style.display = "none";
+        mismatchList.innerHTML = "";
+      }
       const m = payload.metrics || {};
       const topDev = deviations.slice(0, 8).map((d) => {
         const loc = `полка ${d.shelf_id || 0}, слот ${d.slot_index || 0}`;
@@ -537,13 +1220,16 @@
         const act = d.actual?.sku_id || "—";
         return `• [${d.type}] ${loc}: ожидался ${exp}, факт ${act}`;
       });
+      const badSlots = deviations.map((d) => `П${d.shelf_id || 0}/С${d.slot_index || 0}`);
       node.innerHTML =
         `<div><b>Score:</b> ${Number(payload.compliance_score || 0).toFixed(2)} / 100 &nbsp;` +
         `<b>Статус:</b> ${escapeHtml(payload.status || "—")}</div>` +
         `<div style="margin-top:6px"><b>Метрики:</b> presence=${Number(m.presence_ratio || 0).toFixed(3)}, ` +
         `position=${Number(m.position_ratio || 0).toFixed(3)}, facings=${Number(m.facings_ratio || 0).toFixed(3)}</div>` +
         `<div style="margin-top:6px"><b>Отклонений:</b> ${deviations.length}, <b>Uncertainty:</b> ${uncertainty.length}</div>` +
+        `<div style="margin-top:6px"><b>Сдвиг матрицы по полкам:</b> ${escapeHtml(JSON.stringify(m.slot_alignment_shift_by_shelf || {}))}</div>` +
         `<div style="margin-top:6px"><b>Не похожи на идеальную позицию:</b> ${idealFlags.length}</div>` +
+        `<div style="margin-top:6px"><b>Красные рамки на изображении:</b> ${badSlots.length ? escapeHtml(badSlots.join(", ")) : "нет"}</div>` +
         `<div style="margin-top:6px"><b>Brand-level:</b> foreign=${Number(payload.foreign_brand_count || 0)}, ` +
         `substitute=${Number(payload.brand_substitute_count || 0)}, info_only=${Number(payload.info_only_deviation_count || 0)}</div>` +
         `${topDev.length ? `<div style="margin-top:8px; white-space:pre-wrap">${escapeHtml(topDev.join("\n"))}</div>` : ""}`;
@@ -555,14 +1241,17 @@
       return d.innerHTML;
     }
 
-    function openCropDetailModal(item, kind) {
+    function _renderCropModalCurrent() {
+      const item = cropModalState.items[cropModalState.index];
+      const kind = cropModalState.kind;
+      if (!item) return;
       const modal = document.getElementById("cropDetailModal");
       const imgEl = document.getElementById("cropDetailImg");
       const textEl = document.getElementById("cropDetailText");
       const titleEl = document.getElementById("cropDetailTitle");
       imgEl.src = item.crop_url || "";
       imgEl.alt = `Позиция ${item.index}`;
-      titleEl.textContent = `Позиция #${item.index}`;
+      titleEl.textContent = `Позиция #${item.index} (${cropModalState.index + 1}/${cropModalState.items.length})`;
 
       const rows = [];
       if (kind === "lm_recognition") {
@@ -582,6 +1271,7 @@
         }
         if (item.crop_path) rows.push(["Файл кропа (прогон LM)", item.crop_path]);
         if (item.reference_crop_path) rows.push(["Кроп в папке разбора", item.reference_crop_path]);
+        rows.push(["Зона", item.zone_tag === "foreign" ? "foreign (чужое)" : "own (наше)"]);
       } else {
         rows.push(["Метка", item.label || "—"]);
         rows.push(["Оценка", (item.score != null ? item.score : 0).toFixed(2)]);
@@ -590,6 +1280,7 @@
           rows.push(["BBox", `x1=${b.x1} y1=${b.y1} x2=${b.x2} y2=${b.y2}`]);
         }
         if (item.crop_path) rows.push(["Файл кропа", item.crop_path]);
+        rows.push(["Зона", item.zone_tag === "foreign" ? "foreign (чужое)" : "own (наше)"]);
       }
 
       let html = "<dl>";
@@ -602,6 +1293,26 @@
       modal.style.display = "flex";
       modal.setAttribute("aria-hidden", "false");
       document.body.style.overflow = "hidden";
+      document.getElementById("cropDetailPrevBtn").disabled = cropModalState.index <= 0;
+      document.getElementById("cropDetailNextBtn").disabled = cropModalState.index >= cropModalState.items.length - 1;
+    }
+
+    function openCropDetailModal(item, kind, items, index) {
+      cropModalState.kind = kind || "reference";
+      cropModalState.items = Array.isArray(items) ? items : [];
+      cropModalState.index = Number(index);
+      if (!Number.isInteger(cropModalState.index) || cropModalState.index < 0) {
+        cropModalState.index = Math.max(0, cropModalState.items.findIndex((x) => x === item));
+      }
+      _renderCropModalCurrent();
+    }
+
+    function moveCropModal(delta) {
+      if (!Array.isArray(cropModalState.items) || cropModalState.items.length === 0) return;
+      const next = cropModalState.index + Number(delta || 0);
+      if (next < 0 || next >= cropModalState.items.length) return;
+      cropModalState.index = next;
+      _renderCropModalCurrent();
     }
 
     function closeCropDetailModal() {
@@ -613,14 +1324,180 @@
       imgEl.removeAttribute("src");
     }
 
+    function closeSlotCompareModal() {
+      const modal = document.getElementById("slotCompareModal");
+      modal.style.display = "none";
+      modal.setAttribute("aria-hidden", "true");
+    }
+
+    function openSlotCompareModal(slot) {
+      if (!slot) return;
+      const modal = document.getElementById("slotCompareModal");
+      const title = document.getElementById("slotCompareTitle");
+      const summary = document.getElementById("slotCompareSummary");
+      const body = document.getElementById("slotCompareBody");
+      const sameSku = (slot.expected_sku_id || "") === (slot.actual_sku_id || "");
+      const sameName = (slot.expected_name || "").trim().toLowerCase() === (slot.actual_name || "").trim().toLowerCase();
+      let stateLabel = slot.match_ok ? "OK" : (slot.status === "empty" ? "EMPTY" : "MISMATCH");
+      if (slot.match_ok && !sameSku && sameName) {
+        stateLabel = "OK (по имени, SKU-вариант)";
+      }
+      title.textContent = `Позиция: полка ${slot.shelf_id}, слот ${slot.slot_index}`;
+      summary.textContent = `Выровненная позиция на фото: ${slot.aligned_pos}, index: ${slot.observed_index || "—"}, статус: ${stateLabel}`;
+      body.innerHTML =
+        `<div class="slot-compare-col">` +
+        `<h5>Должно быть</h5>` +
+        `<div><b>SKU:</b> ${escapeHtml(slot.expected_sku_id || "—")}</div>` +
+        `<div><b>Название:</b> ${escapeHtml(slot.expected_name || "—")}</div>` +
+        `</div>` +
+        `<div class="slot-compare-col">` +
+        `<h5>Стоит по факту</h5>` +
+        `<div><b>SKU:</b> ${escapeHtml(slot.actual_sku_id || "—")}</div>` +
+        `<div><b>Название:</b> ${escapeHtml(slot.actual_name || "—")}</div>` +
+        `</div>`;
+      modal.style.display = "flex";
+      modal.setAttribute("aria-hidden", "false");
+    }
+
+    function imagePointFromClick(imgEl, evt) {
+      const rect = imgEl.getBoundingClientRect();
+      const nw = imgEl.naturalWidth || 0;
+      const nh = imgEl.naturalHeight || 0;
+      if (nw <= 0 || nh <= 0 || rect.width <= 1 || rect.height <= 1) return null;
+      const imgRatio = nw / nh;
+      const boxRatio = rect.width / rect.height;
+      let drawW;
+      let drawH;
+      let offsetX = 0;
+      let offsetY = 0;
+      if (imgRatio >= boxRatio) {
+        drawW = rect.width;
+        drawH = rect.width / imgRatio;
+        offsetY = (rect.height - drawH) / 2;
+      } else {
+        drawH = rect.height;
+        drawW = rect.height * imgRatio;
+        offsetX = (rect.width - drawW) / 2;
+      }
+      const px = evt.clientX - rect.left - offsetX;
+      const py = evt.clientY - rect.top - offsetY;
+      if (px < 0 || py < 0 || px > drawW || py > drawH) return null;
+      return {
+        x: (px / drawW) * nw,
+        y: (py / drawH) * nh,
+      };
+    }
+
     (function setupCropModal() {
       const modal = document.getElementById("cropDetailModal");
       document.getElementById("cropDetailClose").addEventListener("click", closeCropDetailModal);
       document.getElementById("cropDetailBackdrop").addEventListener("click", closeCropDetailModal);
+      document.getElementById("cropDetailPrevBtn").addEventListener("click", () => moveCropModal(-1));
+      document.getElementById("cropDetailNextBtn").addEventListener("click", () => moveCropModal(1));
       document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && modal.style.display === "flex") closeCropDetailModal();
+        if (modal.style.display !== "flex") return;
+        if (e.key === "Escape") closeCropDetailModal();
+        if (e.key === "ArrowLeft") moveCropModal(-1);
+        if (e.key === "ArrowRight") moveCropModal(1);
       });
     })();
+
+    (function setupComplianceSlotModal() {
+      const modal = document.getElementById("slotCompareModal");
+      const annotated = document.getElementById("complianceAnnotatedImg");
+      document.getElementById("slotCompareClose").addEventListener("click", closeSlotCompareModal);
+      document.getElementById("slotCompareBackdrop").addEventListener("click", closeSlotCompareModal);
+      annotated.addEventListener("click", (e) => {
+        if (!complianceClickState.slots.length) return;
+        const pt = imagePointFromClick(annotated, e);
+        if (!pt) return;
+        const hit = complianceClickState.slots.find((s) =>
+          pt.x >= s.bbox.x1 && pt.x <= s.bbox.x2 && pt.y >= s.bbox.y1 && pt.y <= s.bbox.y2
+        );
+        if (!hit) return;
+        openSlotCompareModal(hit);
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && modal.style.display !== "none") {
+          closeSlotCompareModal();
+        }
+      });
+    })();
+
+    function getLmDisplayName(item) {
+      return String(item?.lm?.normalized_name || item?.lm?.item_name || "unknown").trim() || "unknown";
+    }
+
+    function renderCropCards(list, kind) {
+      const cropsNode = document.getElementById("refCrops");
+      cropsNode.innerHTML = "";
+      list.forEach((item, idx) => {
+        const wrap = document.createElement("div");
+        wrap.className = "crop-card";
+        wrap.setAttribute("role", "button");
+        wrap.tabIndex = 0;
+        wrap.title = "Нажмите для просмотра крупно и подробностей";
+        const img = document.createElement("img");
+        img.src = item.crop_url || "";
+        img.alt = `crop_${item.index}`;
+        const txt = document.createElement("div");
+        txt.className = "muted";
+        if (kind === "lm_recognition" && item.lm) {
+          const lm = item.lm;
+          const zoneText = item.zone_tag === "foreign" ? "foreign" : "own";
+          txt.innerHTML =
+            `#${item.index} <b>${lm.item_name || "unknown"}</b><br>` +
+            `conf=${(lm.confidence ?? 0).toFixed(2)} status=${lm.status || ""}<br>` +
+            `norm: ${lm.normalized_name || ""}<br>` +
+            `zone: ${zoneText}`;
+        } else {
+          const zoneText = item.zone_tag === "foreign" ? "foreign" : "own";
+          txt.textContent = `#${item.index} ${item.label || "item"} (${(item.score ?? 0).toFixed(2)}) · ${zoneText}`;
+        }
+        const open = () => openCropDetailModal(item, kind, list, idx);
+        wrap.addEventListener("click", open);
+        wrap.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            open();
+          }
+        });
+        wrap.appendChild(img);
+        wrap.appendChild(txt);
+        cropsNode.appendChild(wrap);
+      });
+    }
+
+    function rerenderVisualCropsFromControls() {
+      const kind = visualState.kind || "reference";
+      const listRaw = Array.isArray(visualState.list) ? [...visualState.list] : [];
+      if (kind !== "lm_recognition") {
+        renderCropCards(listRaw, kind);
+        return;
+      }
+      listRaw.sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
+      const selectedName = String(document.getElementById("lmNameFilterSelect").value || "__all__");
+      const filtered = selectedName === "__all__"
+        ? listRaw
+        : listRaw.filter((item) => getLmDisplayName(item) === selectedName);
+      renderCropCards(filtered, kind);
+    }
+
+    function updateLmNameFilterOptions() {
+      const select = document.getElementById("lmNameFilterSelect");
+      const prev = String(select.value || "__all__");
+      const names = new Set();
+      (visualState.list || []).forEach((item) => names.add(getLmDisplayName(item)));
+      const sortedNames = Array.from(names).sort((a, b) => a.localeCompare(b, "ru"));
+      select.innerHTML = '<option value="__all__">Все названия</option>';
+      sortedNames.forEach((name) => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        select.appendChild(opt);
+      });
+      select.value = sortedNames.includes(prev) ? prev : "__all__";
+    }
 
     function renderVisual(payload) {
       const visual = payload?.visual;
@@ -634,13 +1511,13 @@
       document.getElementById("visualTitle").textContent =
         kind === "lm_recognition"
           ? "Распознавание: кропы разбора → LM Studio"
-          : "Разбор фото (SKU110K)";
+          : (kind === "compliance" ? "Проверка соответствия выкладки" : "Разбор фото (SKU110K)");
       document.getElementById("refInputLabel").textContent =
-        kind === "lm_recognition" ? "Исходное фото разбора" : "Входное фото";
+        kind === "lm_recognition" ? "Исходное фото разбора" : (kind === "compliance" ? "Фото шага 3" : "Входное фото");
       document.getElementById("refAnnotatedLabel").textContent =
-        kind === "lm_recognition" ? "Подписи LM на зонах позиций" : "Размеченное фото (SKU110K)";
+        kind === "lm_recognition" ? "Подписи LM на зонах позиций" : (kind === "compliance" ? "Красный = нарушение" : "Размеченное фото (SKU110K)");
       document.getElementById("cropsSectionTitle").textContent =
-        kind === "lm_recognition" ? "Кропы позиций + распознавание LM" : "Кропы позиций";
+        kind === "lm_recognition" ? "Кропы позиций + распознавание LM" : (kind === "compliance" ? "Позиции (по данным проверки)" : "Кропы позиций");
 
       document.getElementById("refInputImg").src = visual.input_url || "";
       document.getElementById("refAnnotatedImg").src = visual.annotated_url || "";
@@ -649,11 +1526,13 @@
         const analysis = visual.analysis || {};
         const shelfCount = Number(analysis.shelf_count || 0);
         const positionsCount = Number(analysis.positions_count || 0);
+        const ownCount = Number(analysis.own_positions_count || 0);
+        const foreignCount = Number(analysis.foreign_positions_count || 0);
         const perShelf = Array.isArray(analysis.objects_per_shelf) ? analysis.objects_per_shelf : [];
         const shelfText = perShelf
           .map((s) => `полка ${Number(s.shelf || 0)}: ${Number(s.count || 0)}`)
           .join(", ");
-        analysisNode.textContent = `Анализ: полок ${shelfCount}, объектов ${positionsCount}${shelfText ? ` (${shelfText})` : ""}`;
+        analysisNode.textContent = `Анализ: полок ${shelfCount}, объектов ${positionsCount}, own=${ownCount}, foreign=${foreignCount}${shelfText ? ` (${shelfText})` : ""}`;
         analysisNode.style.display = "block";
       } else {
         analysisNode.textContent = "";
@@ -661,41 +1540,16 @@
       }
 
       const cropsNode = document.getElementById("refCrops");
-      cropsNode.innerHTML = "";
       const list =
-        kind === "lm_recognition" ? (visual.positions || []) : (visual.crops || []);
-      list.forEach((item) => {
-        const wrap = document.createElement("div");
-        wrap.className = "crop-card";
-        wrap.setAttribute("role", "button");
-        wrap.tabIndex = 0;
-        wrap.title = "Нажмите для просмотра крупно и подробностей";
-        const img = document.createElement("img");
-        img.src = item.crop_url || "";
-        img.alt = `crop_${item.index}`;
-        const txt = document.createElement("div");
-        txt.className = "muted";
-        if (kind === "lm_recognition" && item.lm) {
-          const lm = item.lm;
-          txt.innerHTML =
-            `#${item.index} <b>${lm.item_name || "unknown"}</b><br>` +
-            `conf=${(lm.confidence ?? 0).toFixed(2)} status=${lm.status || ""}<br>` +
-            `norm: ${lm.normalized_name || ""}`;
-        } else {
-          txt.textContent = `#${item.index} ${item.label || "item"} (${(item.score ?? 0).toFixed(2)})`;
-        }
-        const open = () => openCropDetailModal(item, kind);
-        wrap.addEventListener("click", open);
-        wrap.addEventListener("keydown", (e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            open();
-          }
-        });
-        wrap.appendChild(img);
-        wrap.appendChild(txt);
-        cropsNode.appendChild(wrap);
-      });
+        kind === "lm_recognition" ? (visual.positions || []) : (kind === "compliance" ? (visual.positions || []) : (visual.crops || []));
+      visualState.kind = kind;
+      visualState.list = list;
+      const controls = document.getElementById("lmCropsControls");
+      controls.style.display = kind === "lm_recognition" ? "grid" : "none";
+      if (kind === "lm_recognition") {
+        updateLmNameFilterOptions();
+      }
+      rerenderVisualCropsFromControls();
     }
 
     async function loadHistoryForReferenceSku() {
@@ -736,12 +1590,15 @@
         opt.value = rd;
         opt.textContent =
           `«${item.sku || "—"}» · ${item.reference_filename || "photo"} · позиций: ${item.positions_count || 0}`;
+        opt.dataset.visualAnnotated = String(item?.visual?.annotated_url || "");
         select.appendChild(opt);
         const opt2 = document.createElement("option");
         opt2.value = rd;
         opt2.textContent = opt.textContent;
+        opt2.dataset.visualAnnotated = String(item?.visual?.annotated_url || "");
         complianceSelect.appendChild(opt2);
       });
+      updateStepLocks();
     }
 
     let lmRecognitionItemsCache = [];
@@ -852,6 +1709,13 @@
 
     document.getElementById("referenceForm").addEventListener("submit", async (e) => {
       e.preventDefault();
+      const zoneEnabled = document.getElementById("useOwnZoneCheckbox").checked;
+      const zoneValue = (document.getElementById("ownZoneNormInput").value || "").trim();
+      if (zoneEnabled && !zoneValue) {
+        const fail = { ok: false, error: "Отметьте прямоугольник зоны своих товаров на фото" };
+        output.textContent = JSON.stringify(fail, null, 2);
+        return;
+      }
       const payload = await sendForm(
         e.currentTarget,
         "/reference/save",
@@ -902,6 +1766,7 @@
         2,
       );
     });
+    document.getElementById("lmNameFilterSelect").addEventListener("change", rerenderVisualCropsFromControls);
 
     let recognitionNameInputTimer = null;
     document.getElementById("recognitionNameInput").addEventListener("input", () => {
@@ -1008,7 +1873,42 @@
       }
     });
 
+    function updateStepLocks() {
+      const refForStep2 = String(document.getElementById("referenceResultDir").value || "").trim();
+      const recognizeSubmitBtn = document.getElementById("recognizeSubmitBtn");
+      const step2LockHint = document.getElementById("step2LockHint");
+      const step2Locked = !refForStep2;
+      recognizeSubmitBtn.disabled = step2Locked;
+      step2LockHint.textContent = step2Locked
+        ? "Для шага 2 сначала выберите сохранённый разбор из шага 1."
+        : "Готово: можно запускать распознавание в LM Studio.";
+
+      const refForStep3 = String(document.getElementById("complianceReferenceResultDir").value || "").trim();
+      const planRaw = String(document.getElementById("referencePlanogramJson").value || "").trim();
+      const catRaw = String(document.getElementById("skuCatalogJson").value || "").trim();
+      const step3Locked = !refForStep3 || !planRaw || !catRaw;
+      const complianceSubmitBtn = document.getElementById("complianceSubmitBtn");
+      const step3LockHint = document.getElementById("step3LockHint");
+      complianceSubmitBtn.disabled = step3Locked;
+      step3LockHint.textContent = step3Locked
+        ? "Для шага 3 выберите разбор и подставьте JSON планограммы/каталога."
+        : "Готово: можно запускать проверку соответствия.";
+    }
+
+    document.getElementById("referenceResultDir").addEventListener("change", updateStepLocks);
+    document.getElementById("complianceReferenceResultDir").addEventListener("change", () => {
+      const select = document.getElementById("complianceReferenceResultDir");
+      const opt = select.options[select.selectedIndex];
+      const complianceReferenceImg = document.getElementById("complianceReferenceImg");
+      complianceReferenceImg.src = opt?.dataset?.visualAnnotated || "";
+      updateStepLocks();
+    });
+    document.getElementById("referencePlanogramJson").addEventListener("input", updateStepLocks);
+    document.getElementById("skuCatalogJson").addEventListener("input", updateStepLocks);
+
     setupPreviewZoomFollow();
+    setupSidebarResize();
+    setupOwnZonePicker();
 
     prettyJsonOrDefault("referencePlanogramJson", {
       slots: [
@@ -1038,6 +1938,7 @@
     loadHistoryForSku("");
     loadLmRecognitionHistory("");
     loadPlanogramListForCompliance();
+    updateStepLocks();
   </script>
 </body>
 </html>

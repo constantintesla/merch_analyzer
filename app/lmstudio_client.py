@@ -10,6 +10,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from PIL import Image, ImageOps
+from app.prompts import (
+    BEVERAGE_CLASSIFY_SYSTEM_PROMPT,
+    build_assess_placement_prompt,
+    build_batch_classify_user_intro,
+    build_classify_crop_user_prompt,
+    build_planogram_from_full_image_prompt,
+    build_planogram_repair_prompt,
+    build_recheck_item_name_prompt,
+)
 
 
 @dataclass
@@ -30,40 +39,6 @@ _ENGLISH_META_SNIPPET_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Системный промпт для classify_crop (/recognize): напитки на полке, ответ строкой на русском.
-BEVERAGE_CLASSIFY_SYSTEM_PROMPT = """You are an object recognition system for beverages on a shelf. The input photo always contains exactly one bottle or can. Your task: recognize what is shown and return the result strictly in Russian, in the specified format.
-
-Important: Our company produces two brands of bottled water:
-- Новотроицкая (газированная / негазированная)
-- Пьютти (газированная / негазированная)
-
-These names must be written exactly as shown above when recognized.
-
-Rules:
-- Identify the beverage brand and type as accurately as possible.
-- If the product is Новотроицкая or Пьютти, specify carbonation type if visible (газированная / негазированная).
-- For any other product (Coca-Cola, Fanta, Bonaqua, Святой источник, juice, etc.), output its name as recognized.
-- Output format: "Напиток: {название}"
-- If nothing is recognizable on the photo, output: "Ничего не обнаружено"
-- No explanations, no extra text. Output only the result in Russian.
-
-Examples:
-Photo: Новотроицкая sparkling → Output: Напиток: Новотроицкая газированная
-Photo: Пьютти still → Output: Напиток: Пьютти негазированная
-Photo: Coca-Cola → Output: Напиток: Coca-Cola
-Photo: Bonaqua still → Output: Напиток: Bonaqua негазированная
-Photo: Святой источник 0.5 л → Output: Напиток: Святой источник
-Photo: empty shelf → Output: Ничего не обнаружено
-
-Follow these rules strictly. Start your response immediately with "Напиток:" or "Ничего не обнаружено".
-Never output English explanations, meta-commentary, or phrases like "The user wants". Only the Russian line in the required format."""
-
-BEVERAGE_RECHECK_USER_HINT = (
-    "\n\nЭто повторная попытка: внимательно рассмотри этикетку, крышку и форму упаковки. "
-    "Если бренд читается — укажи его в формате «Напиток: …». Ответь строго в том же формате, что в инструкции."
-)
-
-
 def _has_cyrillic(text: str) -> bool:
     return bool(_CYRILLIC_RE.search(text))
 
@@ -78,6 +53,88 @@ def _looks_like_english_meta_instruction(text: str) -> bool:
     if re.search(r"\bthe user (wants|is asking|requests)\b", t, re.I):
         return True
     return False
+
+
+def _standardize_beverage_name(name: str) -> str:
+    """Приводит ответы модели к каноническим названиям для стабильной группировки."""
+    src = " ".join(str(name or "").strip().split())
+    if not src:
+        return "unknown"
+    low = src.lower().replace("ё", "е")
+
+    if "ничего не обнаружено" in low or low in {"ничего", "нет товара", "товар не найден"}:
+        return "Ничего не обнаружено"
+    if any(x in low for x in ("неизвест", "unknown", "сторонн", "чуж")):
+        return "Неизвестный бренд"
+
+    def has_any(*parts: str) -> bool:
+        return any(p in low for p in parts)
+
+    # Новотроицкая
+    if has_any("новотроиц"):
+        if has_any("негаз", "без газа", "still", "голуб", "светло-син"):
+            return "Новотроицкая негазированная"
+        if has_any("газ", "sparkling", "син", "темно-син"):
+            return "Новотроицкая газированная"
+        return "Новотроицкая"
+
+    # Пьютти
+    if has_any("пьютти", "pyutti"):
+        if has_any("минерал"):
+            return "Пьютти минерализованная"
+        if has_any("негаз", "без газа", "still"):
+            return "Пьютти негазированная"
+        if has_any("газ", "sparkling"):
+            return "Пьютти газированная"
+        return "Пьютти"
+
+    # ДЖОЙС / DJOIS (часто с OCR-ошибками)
+    is_joy = bool(
+        re.search(r"(дж[оo][йи1l]?[сc]|d[jіi]o[i1l]s|djois|джоис|джойс)", low, flags=re.IGNORECASE)
+    )
+    if is_joy:
+        if has_any("cola", "кола"):
+            return "ДЖОЙС Cola"
+        if has_any("лимон", "lemon"):
+            return "ДЖОЙС Лимон"
+        if has_any("апельс", "orange"):
+            return "ДЖОЙС Апельсин"
+        if has_any("мохито", "mojito", "лайм", "мята"):
+            return "ДЖОЙС Мохито"
+        return "ДЖОЙС"
+
+    # АСАРТИ
+    if has_any("асарти", "asarti"):
+        if has_any("кола", "cola"):
+            return "АСАРТИ Кола"
+        if has_any("лимон"):
+            return "АСАРТИ Лимонад"
+        if has_any("апельс"):
+            return "АСАРТИ Апельсин"
+        if has_any("дюшес"):
+            return "АСАРТИ Дюшес"
+        if has_any("тархун"):
+            return "АСАРТИ Тархун"
+        if has_any("ситро"):
+            return "АСАРТИ Ситро"
+        return "АСАРТИ"
+
+    # Вкус Детства
+    if has_any("вкус детства"):
+        if has_any("лимон"):
+            return "Вкус Детства Лимонад"
+        if has_any("тархун"):
+            return "Вкус Детства Тархун"
+        if has_any("буратино"):
+            return "Вкус Детства Буратино"
+        if has_any("дюшес"):
+            return "Вкус Детства Дюшес"
+        if has_any("малин"):
+            return "Вкус Детства Малина"
+        return "Вкус Детства"
+
+    # Все остальные в рамках текущей задачи считаем внешним брендом.
+    return "Неизвестный бренд"
 
 
 class LMStudioClient:
@@ -213,7 +270,7 @@ class LMStudioClient:
             nap_found.append(name)
 
         if nap_found:
-            name = nap_found[-1]
+            name = _standardize_beverage_name(nap_found[-1])
             return ItemClassification(
                 raw_name=name,
                 normalized_name=name,
@@ -235,9 +292,9 @@ class LMStudioClient:
             if len(candidate.split()) > 4:
                 continue
             return ItemClassification(
-                raw_name=candidate,
-                normalized_name=candidate,
-                item_name=candidate,
+                raw_name=_standardize_beverage_name(candidate),
+                normalized_name=_standardize_beverage_name(candidate),
+                item_name=_standardize_beverage_name(candidate),
                 confidence=0.82,
                 status="ok",
             )
@@ -247,10 +304,11 @@ class LMStudioClient:
             payload = LMStudioClient._extract_json(t)
             raw_item = str(payload.get("item_name", "")).strip()
             if raw_item and raw_item.lower() != "unknown" and not _looks_like_english_meta_instruction(raw_item):
+                std = _standardize_beverage_name(raw_item)
                 return ItemClassification(
-                    raw_name=raw_item,
-                    normalized_name=raw_item,
-                    item_name=raw_item,
+                    raw_name=std,
+                    normalized_name=std,
+                    item_name=std,
                     confidence=0.8,
                     status="ok",
                 )
@@ -273,9 +331,9 @@ class LMStudioClient:
             if _looks_like_english_meta_instruction(candidate):
                 continue
             return ItemClassification(
-                raw_name=candidate,
-                normalized_name=candidate,
-                item_name=candidate,
+                raw_name=_standardize_beverage_name(candidate),
+                normalized_name=_standardize_beverage_name(candidate),
+                item_name=_standardize_beverage_name(candidate),
                 confidence=0.72,
                 status="uncertain",
             )
@@ -283,10 +341,11 @@ class LMStudioClient:
         for m in re.finditer(r"(?im)^\s*Напиток:\s*(.+)$", t):
             name = m.group(1).strip()
             if name and not _looks_like_english_meta_instruction(name):
+                std = _standardize_beverage_name(name)
                 return ItemClassification(
-                    raw_name=name,
-                    normalized_name=name,
-                    item_name=name,
+                    raw_name=std,
+                    normalized_name=std,
+                    item_name=std,
                     confidence=0.85,
                     status="ok",
                 )
@@ -299,6 +358,8 @@ class LMStudioClient:
         # Не терять кириллицу: если модель дала русское в item_name, а normalized — латиницей/переводом
         if raw_name != "unknown" and _has_cyrillic(raw_name) and not _has_cyrillic(normalized_name):
             normalized_name = raw_name
+        raw_name = _standardize_beverage_name(raw_name)
+        normalized_name = _standardize_beverage_name(normalized_name)
         item_name = normalized_name
         try:
             conf = float(payload.get("confidence_raw", payload.get("confidence", 0.0)))
@@ -418,13 +479,7 @@ class LMStudioClient:
 
         prepared = self._maybe_downscale_for_lm(crop_image.copy(), max_side)
         data_url = self._image_to_data_url(prepared, quality=jpeg_q)
-        user_text = (
-            "Распознай напиток на изображении. Ответь строго в формате из системных инструкций. "
-            "Только одна строка на русском: «Напиток: …» или «Ничего не обнаружено». "
-            "Без английского текста и без рассуждений."
-        )
-        if retry:
-            user_text += BEVERAGE_RECHECK_USER_HINT
+        user_text = build_classify_crop_user_prompt(retry=retry)
         messages = [
             {"role": "system", "content": BEVERAGE_CLASSIFY_SYSTEM_PROMPT},
             {
@@ -583,15 +638,7 @@ class LMStudioClient:
             status="lmstudio_error",
         )
 
-        user_intro = (
-            f"Перед тобой {n} изображений в порядке slot 0..{n - 1} "
-            f"(первое изображение = slot 0, далее по порядку). "
-            "Для каждого слота распознай напиток по правилам из системного промпта. "
-            "Верни ТОЛЬКО один JSON без markdown и без текста вокруг. Формат:\n"
-            '{"results":[{"slot":0,"line":"Напиток: … или Ничего не обнаружено"}, ...]}\n'
-            f"Поле line — ровно одна строка на русском для этого слота. "
-            f"В массиве results должны быть все слоты от 0 до {n - 1}."
-        )
+        user_intro = build_batch_classify_user_intro(n=n)
         content: list[dict[str, Any]] = [{"type": "text", "text": user_intro}]
         for crop in crop_images:
             prepared = self._maybe_downscale_for_lm(crop.copy(), max_side)
@@ -639,14 +686,7 @@ class LMStudioClient:
         return out
 
     def recheck_item_name_text(self, item_name: str) -> ItemClassification:
-        prompt = (
-            "Проверь название товара и нормализуй его. "
-            "КРИТИЧНО: не переводи на английский; если вход на русском (кириллица), ответ тоже на русском. "
-            "Если название не похоже на товар или неуверенно, верни unknown. "
-            "Верни только JSON с полями: "
-            '{"item_name":"string","normalized_name":"string","confidence_raw":0.0,"status":"ok|uncertain|unknown"}. '
-            f"Входное название: {item_name!r}"
-        )
+        prompt = build_recheck_item_name_prompt(item_name=item_name)
         messages = [{"role": "user", "content": prompt}]
         try:
             content = self._chat_completion_content(messages=messages, temperature=0.0)
@@ -771,20 +811,7 @@ class LMStudioClient:
         позиции на полке слева направо, для каждой — item_name и bbox_norm в долях кадра [0,1].
         """
         data_url = self._image_to_data_url(image)
-        prompt = (
-            "Ты анализируешь фото торговой полки (планограмма). "
-            "Нужно перечислить ВСЕ видимые товарные позиции: порядок слева направо на каждой полке, "
-            "полки считай сверху вниз (верхняя полка = shelf_id 1, следующая = 2, …). "
-            "Не выдумывай товары: если не читается — кратко опиши что видно или unknown. "
-            "КРИТИЧНО: название item_name на том же языке, что на упаковке (кириллица — без перевода на английский). "
-            "Для КАЖДОЙ позиции обязательно укажи bbox_norm: прямоугольник вокруг товара в долях ширины/высоты кадра, "
-            "ключи x1,y1,x2,y2, значения от 0 до 1 (левый верхний угол кадра = 0,0). "
-            "Верни ТОЛЬКО один JSON-объект без markdown и без текста вокруг. Формат:\n"
-            '{"shelves":[{"shelf_id":1,"items":['
-            '{"position_in_shelf":1,"item_name":"строка","bbox_norm":{"x1":0.0,"y1":0.0,"x2":0.1,"y2":0.1},"confidence":0.8}'
-            "]}]}\n"
-            "Поле confidence — твоя уверенность в названии [0,1]. Если несколько одинаковых SKU подряд — отдельные позиции."
-        )
+        prompt = build_planogram_from_full_image_prompt()
         messages = [
             {
                 "role": "user",
@@ -806,13 +833,7 @@ class LMStudioClient:
         except (json.JSONDecodeError, ValueError):
             # Иногда VLM отвечает длинным текстом без валидного JSON.
             # Повторно просим ту же модель преобразовать ответ в строгий JSON.
-            repair_prompt = (
-                "Преобразуй следующий текст в СТРОГИЙ JSON-объект формата:\n"
-                '{"shelves":[{"shelf_id":1,"items":[{"position_in_shelf":1,"item_name":"string","bbox_norm":{"x1":0.0,"y1":0.0,"x2":0.1,"y2":0.1},"confidence":0.8}]}]}\n'
-                "Только JSON, без markdown и без комментариев. "
-                "Если данных не хватает, верни пустой объект с shelves: [].\n\n"
-                f"Текст:\n{content}"
-            )
+            repair_prompt = build_planogram_repair_prompt(content=str(content))
             repair_content = self._chat_completion_content(
                 messages=[{"role": "user", "content": repair_prompt}],
                 temperature=0.0,
@@ -831,15 +852,10 @@ class LMStudioClient:
         reference_result: dict[str, Any],
         fact_result: dict[str, Any],
     ) -> dict[str, Any]:
-        prompt = (
-            "Ты сравниваешь эталон и факт выкладки одного SKU. "
-            "Нужно вернуть, насколько плохо расставлено, в формате JSON. "
-            "Верни ТОЛЬКО JSON с полями: "
-            '{"badness_score":0,"verdict":"ok|minor|bad|critical","reason":"string","recommendation":"string"}.\n'
-            "Шкала badness_score: 0=идеально, 100=очень плохо.\n"
-            f"SKU: {sku}\n"
-            f"Эталон: {json.dumps(reference_result, ensure_ascii=False)}\n"
-            f"Факт: {json.dumps(fact_result, ensure_ascii=False)}"
+        prompt = build_assess_placement_prompt(
+            sku=sku,
+            reference_result=reference_result,
+            fact_result=fact_result,
         )
         try:
             content = self._chat_completion_content(

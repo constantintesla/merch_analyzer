@@ -40,6 +40,7 @@ from app.step3_compliance import (
     collect_uncertainty_flags,
     compare_planograms_step3,
     infer_similar_sku_groups,
+    match_by_lm_name,
     match_sku_for_crop,
     parse_reference_planogram,
     parse_sku_catalog,
@@ -116,12 +117,45 @@ def _load_normalized_rgb_image(uploaded_bytes: bytes) -> Image.Image:
         return img
 
 
+def _parse_zone_bbox_norm(raw: str) -> dict[str, float] | None:
+    txt = (raw or "").strip()
+    if not txt:
+        return None
+    try:
+        if txt.startswith("{"):
+            data = json.loads(txt)
+            x1 = float(data.get("x1"))
+            y1 = float(data.get("y1"))
+            x2 = float(data.get("x2"))
+            y2 = float(data.get("y2"))
+        else:
+            parts = [float(p.strip()) for p in txt.split(",")]
+            if len(parts) != 4:
+                raise ValueError
+            x1, y1, x2, y2 = parts
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("Некорректный формат зоны: ожидается JSON {x1,y1,x2,y2} в долях [0..1]") from exc
+
+    x1 = max(0.0, min(1.0, x1))
+    y1 = max(0.0, min(1.0, y1))
+    x2 = max(0.0, min(1.0, x2))
+    y2 = max(0.0, min(1.0, y2))
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError("Некорректная зона: x2>x1 и y2>y1 обязательны")
+    return {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+
+
+def _point_in_bbox_norm(x: float, y: float, box: dict[str, float]) -> bool:
+    return bool(box["x1"] <= x <= box["x2"] and box["y1"] <= y <= box["y2"])
+
+
 def _save_reference_positions_sku(
     *,
     img: Image.Image,
     image_path: Path,
     detector: SKU110KDetector,
     run_dir: Path,
+    own_zone_bbox_norm: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
     logger.info(
@@ -155,12 +189,19 @@ def _save_reference_positions_sku(
         y2 = int(max(0, min(det.y2, img.height)))
         if x2 <= x1 or y2 <= y1:
             continue
+        cx_norm = ((x1 + x2) / 2.0) / max(1.0, float(img.width))
+        cy_norm = ((y1 + y2) / 2.0) / max(1.0, float(img.height))
+        is_own_zone = True
+        if own_zone_bbox_norm is not None:
+            is_own_zone = _point_in_bbox_norm(cx_norm, cy_norm, own_zone_bbox_norm)
+        zone_tag = "own" if is_own_zone else "foreign"
         crop_name = f"crop_{idx:03d}.jpg"
         crop_rel = Path("crops") / crop_name
         img.crop((x1, y1, x2, y2)).save(str(run_dir / crop_rel), format="JPEG", quality=92)
-        label = f"{det.label}:{det.score:.2f}"
-        draw.rectangle([(x1, y1), (x2, y2)], outline="red", width=3)
-        draw.text((x1 + 4, max(0, y1 - 14)), f"{idx}. {label}", fill="red")
+        label = f"{det.label}:{det.score:.2f} [{zone_tag}]"
+        box_color = "red" if is_own_zone else "orange"
+        draw.rectangle([(x1, y1), (x2, y2)], outline=box_color, width=3)
+        draw.text((x1 + 4, max(0, y1 - 14)), f"{idx}. {label}", fill=box_color)
         saved_positions.append(
             {
                 "index": idx,
@@ -172,6 +213,8 @@ def _save_reference_positions_sku(
                 "position_in_shelf": int(
                     assignment_by_idx.get(idx - 1, {}).get("position_in_shelf", 0) or 0
                 ),
+                "is_own_zone": bool(is_own_zone),
+                "zone_tag": zone_tag,
             }
         )
     logger.info("reference: после фильтра bbox сохранено позиций=%d", len(saved_positions))
@@ -209,8 +252,13 @@ def _save_reference_positions_sku(
         len(shelf_layout),
         marked_name,
     )
+    own_positions_count = sum(1 for p in saved_positions if bool(p.get("is_own_zone", True)))
+    foreign_positions_count = max(0, len(saved_positions) - own_positions_count)
     return {
         "positions_count": len(saved_positions),
+        "own_positions_count": own_positions_count,
+        "foreign_positions_count": foreign_positions_count,
+        "own_zone_bbox_norm": own_zone_bbox_norm or {},
         "shelf_count": len(shelf_rows),
         "objects_per_shelf": [{"shelf": i + 1, "count": c} for i, c in enumerate(shelf_rows)],
         "positions": saved_positions,
@@ -436,6 +484,113 @@ def _file_url_under_sku_results(category: str, run_id: str, *subpath: str) -> st
     return f"/result-file/{category}/{run_id}/{tail}"
 
 
+def _draw_compliance_overlay(
+    *,
+    image: Image.Image,
+    observed_positions: list[dict[str, Any]],
+    deviations: list[dict[str, Any]],
+    ideal_similarity_flags: list[dict[str, Any]],
+    uncertainty_flags: list[dict[str, Any]],
+    matching_level: str = "sku_only",
+) -> Image.Image:
+    base_img = image.convert("RGBA")
+    overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    # Проверка бренда актуальна только когда в каталоге реально есть заполненный brand
+    # хотя бы у нескольких позиций. Иначе ВСЕ удачные матчи будут жёлтыми, т.к.
+    # каталог из planogram_editor не содержит brand-поля.
+    any_brand_in_positions = any(
+        str(p.get("predicted_brand", "") or "").strip()
+        for p in observed_positions
+        if isinstance(p, dict)
+    )
+    slot_severity: dict[tuple[int, int], str] = {}
+    severity_rank = {"info": 1, "warn": 2, "fail": 3}
+    for d in deviations:
+        if not isinstance(d, dict):
+            continue
+        shelf_id = int(d.get("shelf_id", 0) or 0)
+        slot_index = int(d.get("aligned_observed_slot_index", d.get("slot_index", 0)) or 0)
+        if shelf_id <= 0 or slot_index <= 0:
+            continue
+        sev = str(d.get("visual_severity", "fail") or "fail").strip().lower()
+        if sev not in severity_rank:
+            sev = "fail"
+        key = (shelf_id, slot_index)
+        prev = slot_severity.get(key, "")
+        if not prev or severity_rank[sev] > severity_rank.get(prev, 0):
+            slot_severity[key] = sev
+    # Визуальная "идеальная похожесть" считается до выравнивания и может давать
+    # ложный red для фактически корректных позиций (особенно при match по имени).
+    # Поэтому цвет рамки строим только по итоговым deviations.
+
+    uncertainty_idx = {
+        int(f.get("index", 0) or 0)
+        for f in uncertainty_flags
+        if isinstance(f, dict)
+    }
+
+    for p in observed_positions:
+        if not isinstance(p, dict):
+            continue
+        bbox = p.get("bbox")
+        if not isinstance(bbox, dict):
+            continue
+        box = _bbox_to_int_crop(bbox, base_img.width, base_img.height)
+        if not box:
+            continue
+        x1, y1, x2, y2 = box
+        shelf_id = int(p.get("shelf_id", 0) or 0)
+        slot_index = int(p.get("position_in_shelf", 0) or 0)
+        idx = int(p.get("index", 0) or 0)
+        sev = slot_severity.get((shelf_id, slot_index), "")
+        is_info = sev == "info"
+        is_warn = sev == "warn"
+        bad = sev == "fail"
+        uncertain = idx in uncertainty_idx
+        # Если сравнение на уровне бренда и бренд не определен — визуально помечаем как uncertain.
+        # Только когда brand-данные реально присутствуют хотя бы у части позиций
+        # (иначе для каталога из planogram_editor все OK-совпадения получат жёлтый).
+        if matching_level == "brand_level" and any_brand_in_positions:
+            pred_brand = str(p.get("predicted_brand", "") or "").strip()
+            pred_sku = str(p.get("predicted_sku_id", "") or "").strip().lower()
+            if not pred_brand and pred_sku not in {"", "unknown"} and not bad and not is_info and not is_warn:
+                uncertain = True
+        if bad:
+            stroke_color = (217, 4, 41, 255)
+            fill_color = (217, 4, 41, 52)
+        elif is_info:
+            stroke_color = (37, 99, 235, 255)
+            fill_color = (37, 99, 235, 44)
+        elif is_warn:
+            stroke_color = (139, 92, 246, 255)
+            fill_color = (139, 92, 246, 44)
+        elif uncertain:
+            stroke_color = (245, 158, 11, 255)
+            fill_color = (245, 158, 11, 44)
+        else:
+            stroke_color = (22, 163, 74, 255)
+            fill_color = (22, 163, 74, 44)
+        mark = "FAIL" if bad else ("INFO" if is_info else ("WARN" if is_warn else ("UNCERTAIN" if uncertain else "OK")))
+        pred = str(p.get("predicted_sku_id", "")).strip() or "unknown"
+        draw.rectangle([(x1, y1), (x2, y2)], fill=fill_color, outline=stroke_color, width=4)
+
+        label_text = f"{idx}. {mark} {pred}"
+        text_bbox = draw.textbbox((0, 0), label_text)
+        text_w = max(1, int(text_bbox[2] - text_bbox[0]))
+        text_h = max(1, int(text_bbox[3] - text_bbox[1]))
+        label_x1 = x1 + 2
+        label_y1 = max(0, y1 - text_h - 8)
+        label_x2 = min(base_img.width - 1, label_x1 + text_w + 8)
+        label_y2 = min(base_img.height - 1, label_y1 + text_h + 4)
+        # Полупрозрачная плашка, чтобы подпись читалась на любой этикетке.
+        draw.rectangle([(label_x1, label_y1), (label_x2, label_y2)], fill=(15, 23, 42, 170))
+        draw.text((label_x1 + 4, label_y1 + 2), label_text, fill=stroke_color)
+
+    composed = Image.alpha_composite(base_img, overlay)
+    return composed.convert("RGB")
+
+
 def _record_visual(record: dict[str, Any]) -> dict[str, Any]:
     rel_dir = Path(str(record.get("result_dir", ""))).as_posix()
     ref_pos = record.get("reference_positions", {})
@@ -447,6 +602,9 @@ def _record_visual(record: dict[str, Any]) -> dict[str, Any]:
         "analysis": {
             "shelf_count": int(ref_pos.get("shelf_count", 0) or 0),
             "positions_count": int(ref_pos.get("positions_count", 0) or 0),
+            "own_positions_count": int(ref_pos.get("own_positions_count", 0) or 0),
+            "foreign_positions_count": int(ref_pos.get("foreign_positions_count", 0) or 0),
+            "own_zone_bbox_norm": ref_pos.get("own_zone_bbox_norm", {}),
             "objects_per_shelf": ref_pos.get("objects_per_shelf", []),
         },
         "crops": [
@@ -525,6 +683,180 @@ def _bbox_to_int_crop(bbox: dict[str, Any], img_w: int, img_h: int) -> tuple[int
     if ix2 - ix1 < 4 or iy2 - iy1 < 4:
         return None
     return ix1, iy1, ix2, iy2
+
+
+def _fit_image_to_cell(src: Image.Image, *, width: int, height: int) -> Image.Image:
+    """Масштабирует изображение в рамку ячейки с центрированием."""
+    out = Image.new("RGB", (max(1, width), max(1, height)), (245, 247, 250))
+    if src.width <= 0 or src.height <= 0:
+        return out
+    scale = min(width / src.width, height / src.height)
+    new_w = max(1, int(round(src.width * scale)))
+    new_h = max(1, int(round(src.height * scale)))
+    resized = src.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    px = (width - new_w) // 2
+    py = (height - new_h) // 2
+    out.paste(resized, (px, py))
+    return out
+
+
+def _build_shelf_comparison_visuals(
+    *,
+    full_img: Image.Image,
+    aligned_slot_rows: list[dict[str, Any]],
+    observed_positions: list[dict[str, Any]],
+    catalog: list[Any],
+    compliance_run_dir: Path,
+) -> list[dict[str, Any]]:
+    """Собирает картинки по полкам: верхняя строка — эталон, нижняя — факт."""
+    if not aligned_slot_rows:
+        return []
+
+    observed_by_index: dict[int, dict[str, Any]] = {}
+    for pos in observed_positions:
+        if not isinstance(pos, dict):
+            continue
+        idx = int(pos.get("index", 0) or 0)
+        if idx > 0:
+            observed_by_index[idx] = pos
+
+    sku_ref_path: dict[str, Path] = {}
+    for item in catalog:
+        sku_id = str(getattr(item, "sku_id", "") or "")
+        if not sku_id:
+            continue
+        ref_list = list(getattr(item, "reference_images", []) or [])
+        chosen: Path | None = None
+        for rel in ref_list:
+            p = Path(str(rel))
+            if not p.is_absolute():
+                p = (BASE_DIR / p).resolve()
+            if p.is_file():
+                chosen = p
+                break
+        if chosen is not None:
+            sku_ref_path[sku_id] = chosen
+
+    ref_cache: dict[Path, Image.Image] = {}
+
+    def _expected_thumb(expected_sku_id: str, *, cell_w: int, img_h: int) -> Image.Image:
+        p = sku_ref_path.get(expected_sku_id)
+        if p is None:
+            ph = Image.new("RGB", (cell_w, img_h), (240, 240, 240))
+            d = ImageDraw.Draw(ph)
+            d.text((6, 6), expected_sku_id[:18] or "N/A", fill=(80, 80, 80))
+            return ph
+        src = ref_cache.get(p)
+        if src is None:
+            with Image.open(p) as im:
+                src = im.convert("RGB").copy()
+            ref_cache[p] = src
+        return _fit_image_to_cell(src, width=cell_w, height=img_h)
+
+    def _actual_thumb(observed_index: int, *, cell_w: int, img_h: int) -> Image.Image:
+        pos = observed_by_index.get(int(observed_index))
+        if not pos:
+            ph = Image.new("RGB", (cell_w, img_h), (236, 239, 244))
+            d = ImageDraw.Draw(ph)
+            d.text((6, 6), "empty", fill=(91, 102, 117))
+            return ph
+        bbox = pos.get("bbox")
+        if not isinstance(bbox, dict):
+            return Image.new("RGB", (cell_w, img_h), (236, 239, 244))
+        box = _bbox_to_int_crop(bbox, full_img.width, full_img.height)
+        if not box:
+            return Image.new("RGB", (cell_w, img_h), (236, 239, 244))
+        crop = full_img.crop(box).convert("RGB")
+        return _fit_image_to_cell(crop, width=cell_w, height=img_h)
+
+    by_shelf: dict[int, list[dict[str, Any]]] = {}
+    for row in aligned_slot_rows:
+        if not isinstance(row, dict):
+            continue
+        shelf_id = int(row.get("shelf_id", 0) or 0)
+        if shelf_id <= 0:
+            continue
+        by_shelf.setdefault(shelf_id, []).append(row)
+
+    shelf_images: list[dict[str, Any]] = []
+    cell_w = 140
+    img_h = 108
+    header_h = 30
+    row_title_h = 20
+    label_h = 18
+    col_gap = 6
+    side_pad = 10
+
+    for shelf_id in sorted(by_shelf.keys()):
+        rows = sorted(by_shelf[shelf_id], key=lambda r: int(r.get("slot_index", 0) or 0))
+        if not rows:
+            continue
+        shift = int(rows[0].get("alignment_shift", 0) or 0)
+        n = len(rows)
+        width = side_pad * 2 + n * cell_w + max(0, n - 1) * col_gap
+        height = header_h + row_title_h + img_h + label_h + row_title_h + img_h + label_h + 12
+        canvas = Image.new("RGB", (width, height), (252, 253, 255))
+        draw = ImageDraw.Draw(canvas)
+
+        draw.rectangle([(0, 0), (width - 1, header_h)], fill=(18, 26, 41))
+        # Используем ASCII-метки: встроенный PIL-шрифт не всегда умеет кириллицу.
+        draw.text((10, 8), f"Shelf {shelf_id} | shift {shift:+d}", fill=(236, 240, 245))
+
+        exp_y = header_h
+        act_y = header_h + row_title_h + img_h + label_h
+        draw.text((10, exp_y + 2), "REF", fill=(70, 88, 112))
+        draw.text((10, act_y + 2), "ACT", fill=(70, 88, 112))
+
+        for i, row in enumerate(rows):
+            x = side_pad + i * (cell_w + col_gap)
+            expected_sku = str(row.get("expected_sku_id", "") or "")
+            observed_index = int(row.get("observed_index", 0) or 0)
+            actual_sku = str(row.get("actual_sku_id", "") or "")
+            status = str(row.get("status", "") or "")
+            match_ok = bool(row.get("match_ok", False))
+            if status == "ok":
+                border = (22, 163, 74)
+            elif status == "empty":
+                border = (107, 114, 128)
+            else:
+                border = (217, 4, 41)
+            exp_thumb = _expected_thumb(expected_sku, cell_w=cell_w, img_h=img_h)
+            act_thumb = _actual_thumb(observed_index, cell_w=cell_w, img_h=img_h)
+            canvas.paste(exp_thumb, (x, exp_y + row_title_h))
+            canvas.paste(act_thumb, (x, act_y + row_title_h))
+            draw.rectangle(
+                [(x, act_y + row_title_h), (x + cell_w - 1, act_y + row_title_h + img_h - 1)],
+                outline=border,
+                width=3,
+            )
+
+            slot_idx = int(row.get("slot_index", 0) or 0)
+            draw.text((x + 2, exp_y + row_title_h + img_h + 1), f"S{slot_idx}", fill=(74, 85, 104))
+            actual_lbl = actual_sku if actual_sku else "empty"
+            if len(actual_lbl) > 14:
+                actual_lbl = actual_lbl[:14] + "…"
+            draw.text((x + 2, act_y + row_title_h + img_h + 1), actual_lbl, fill=border)
+
+            # Небольшая отметка совпадения для быстрого сканирования ряда
+            if match_ok:
+                draw.text((x + cell_w - 16, act_y + 2), "OK", fill=(22, 163, 74))
+            elif status == "empty":
+                draw.text((x + cell_w - 30, act_y + 2), "EMPTY", fill=(107, 114, 128))
+            else:
+                draw.text((x + cell_w - 28, act_y + 2), "MISS", fill=(217, 4, 41))
+
+        out_name = f"shelf_compare_{shelf_id}.jpg"
+        out_path = compliance_run_dir / out_name
+        canvas.save(str(out_path), format="JPEG", quality=90)
+        shelf_images.append(
+            {
+                "shelf_id": int(shelf_id),
+                "alignment_shift": int(shift),
+                "url": _file_url_under_sku_results("compliance", compliance_run_dir.name, out_name),
+            }
+        )
+
+    return shelf_images
 
 
 def _sku_detector() -> SKU110KDetector:
@@ -993,6 +1325,7 @@ async def planogram_editor_enrich_lm(
 async def save_reference(
     sku: str = Form(...),
     reference_image: UploadFile = File(...),
+    our_zone_norm: str = Form(""),
 ) -> JSONResponse:
     req_t0 = time.perf_counter()
     sku_key = sku.strip()
@@ -1018,6 +1351,10 @@ async def save_reference(
         img.height,
     )
     detector = _sku_detector()
+    try:
+        own_zone_bbox_norm = _parse_zone_bbox_norm(our_zone_norm)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     run_dir = _make_unique_run_dir("reference", orig_name)
     input_path = run_dir / "input.jpg"
@@ -1029,6 +1366,7 @@ async def save_reference(
             image_path=input_path,
             detector=detector,
             run_dir=run_dir,
+            own_zone_bbox_norm=own_zone_bbox_norm,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("POST /reference/save: ошибка SKU110K после %.1f с", time.perf_counter() - req_t0)
@@ -1042,6 +1380,8 @@ async def save_reference(
         "reference_detection": {
             "status": "ok",
             "positions_count": ref_positions_meta.get("positions_count", 0),
+            "own_positions_count": ref_positions_meta.get("own_positions_count", 0),
+            "foreign_positions_count": ref_positions_meta.get("foreign_positions_count", 0),
         },
         "reference_classification": {
             "item_name": "by_sku_detection",
@@ -1328,9 +1668,12 @@ async def recognize_reference_crops(
             if box_d:
                 sx1, sy1, sx2, sy2 = box_d
                 short_name = (lm_res.item_name or "?")[:28]
-                label_txt = f"{idx}. {short_name} ({lm_res.confidence:.2f})"
-                draw.rectangle([(sx1, sy1), (sx2, sy2)], outline="lime", width=3)
-                draw.text((sx1 + 4, max(0, sy1 - 14)), label_txt, fill="lime")
+                is_own_zone = bool(pos.get("is_own_zone", True))
+                zone_tag = "own" if is_own_zone else "foreign"
+                label_txt = f"{idx}. {short_name} ({lm_res.confidence:.2f}) [{zone_tag}]"
+                box_color = "lime" if is_own_zone else "orange"
+                draw.rectangle([(sx1, sy1), (sx2, sy2)], outline=box_color, width=3)
+                draw.text((sx1 + 4, max(0, sy1 - 14)), label_txt, fill=box_color)
 
         per_position.append(
             {
@@ -1338,6 +1681,8 @@ async def recognize_reference_crops(
                 "reference_bbox": bbox_ref if isinstance(bbox_ref, dict) else {},
                 "sku110k_label": str(pos.get("label", "")),
                 "sku110k_score": float(pos.get("score", 0.0) or 0.0),
+                "is_own_zone": bool(pos.get("is_own_zone", True)),
+                "zone_tag": str(pos.get("zone_tag", "own") or "own"),
                 "crop_path": crop_saved_rel,
                 "reference_crop_path": crop_rel_str,
                 "crop_url": crop_url,
@@ -1470,6 +1815,52 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
     if not isinstance(positions_src, list) or not positions_src:
         return JSONResponse({"ok": False, "error": "No positions in reference_result_dir"}, status_code=400)
 
+    # Автоматически подгружаем LM-имена из шага 2 (если такой прогон существует).
+    # Ищем последний lm_recognition-прогон, ссылающийся на тот же reference_result_dir.
+    lm_hint_by_index: dict[int, str] = {}
+    _lm_run_dir_found: str = ""
+    try:
+        lm_recognition_root = SKU_RESULTS_DIR / "lm_recognition"
+        if lm_recognition_root.is_dir():
+            target_ref_dir = str(reference.get("result_dir", "")).replace("\\", "/")
+            lm_runs = sorted(lm_recognition_root.iterdir(), key=lambda d: d.stat().st_mtime, reverse=True)
+            for lm_run in lm_runs[:20]:  # проверяем последние 20 прогонов
+                lm_result_path = lm_run / "result.json"
+                if not lm_result_path.is_file():
+                    continue
+                lm_data = json.loads(lm_result_path.read_text(encoding="utf-8"))
+                lm_ref = str(lm_data.get("reference_result_dir", "")).replace("\\", "/")
+                if lm_ref and (lm_ref == target_ref_dir or lm_ref.endswith(target_ref_dir.split("/")[-1])):
+                    for pp in lm_data.get("per_position", []):
+                        if not isinstance(pp, dict):
+                            continue
+                        idx = int(pp.get("index", 0) or 0)
+                        if idx <= 0:
+                            continue
+                        lm_field = pp.get("lm", {})
+                        if not isinstance(lm_field, dict):
+                            continue
+                        name = str(lm_field.get("item_name", "")).strip()
+                        status = str(lm_field.get("status", "")).strip().lower()
+                        # Включаем ВСЕ имена (в т.ч. «Неизвестный бренд»): match_by_lm_name
+                        # корректно вернёт «foreign» для чужих брендов без дополнительной логики.
+                        if name and status == "ok":
+                            lm_hint_by_index[idx] = name
+                    _lm_run_dir_found = lm_run.name
+                    break
+    except Exception as _lm_exc:
+        logger.warning("compliance: не удалось загрузить LM-имена: %s", _lm_exc)
+
+    lm_names_found = len(lm_hint_by_index)
+    lm_name_weight_effective = llm_name_weight
+    if lm_names_found > 0:
+        # При наличии LM-имён повышаем их вес: они гораздо точнее визуального матчера
+        lm_name_weight_effective = max(llm_name_weight, 0.75)
+        logger.info(
+            "compliance: загружены LM-имена из %s (%d позиций), weight=%.2f",
+            _lm_run_dir_found, lm_names_found, lm_name_weight_effective,
+        )
+
     try:
         t_emb = time.perf_counter()
         ref_embeddings = build_reference_embeddings(catalog, base_dir=BASE_DIR)
@@ -1495,6 +1886,58 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
             full_img = full_img.convert("RGB")
         full_img = full_img.copy()
 
+    # Совместимость со старыми/частично заполненными result.json шага 1:
+    # если часть shelf_id/position_in_shelf отсутствует, восстанавливаем по bbox.
+    slot_assignment_source = "original"
+    recovered_slots_count = 0
+    total_slots_with_bbox = 0
+    missing_slot_indices: set[int] = set()
+    det_objects: list[Detection] = []
+    det_indices: list[int] = []
+    for i, pos in enumerate(positions_src):
+        if not isinstance(pos, dict):
+            continue
+        bbox = pos.get("bbox")
+        if not isinstance(bbox, dict):
+            continue
+        total_slots_with_bbox += 1
+        sid = int(pos.get("shelf_id", 0) or 0)
+        pis = int(pos.get("position_in_shelf", 0) or 0)
+        if sid <= 0 or pis <= 0:
+            missing_slot_indices.add(i)
+        try:
+            det_objects.append(
+                Detection(
+                    x1=float(bbox.get("x1", 0)),
+                    y1=float(bbox.get("y1", 0)),
+                    x2=float(bbox.get("x2", 0)),
+                    y2=float(bbox.get("y2", 0)),
+                    score=float(pos.get("score", 1.0) or 1.0),
+                    label=str(pos.get("label", "item") or "item"),
+                )
+            )
+            det_indices.append(i)
+        except (TypeError, ValueError):
+            continue
+
+    if missing_slot_indices and det_objects:
+        recovered = assign_shelves_and_positions(det_objects, full_img.width, full_img.height)
+        for a in recovered:
+            di = int(a.get("detection_index", -1) or -1)
+            if di < 0 or di >= len(det_indices):
+                continue
+            src_idx = det_indices[di]
+            if src_idx not in missing_slot_indices:
+                continue
+            p = positions_src[src_idx]
+            if not isinstance(p, dict):
+                continue
+            p["shelf_id"] = int(a.get("shelf_id", 0) or 0)
+            p["position_in_shelf"] = int(a.get("position_in_shelf", 0) or 0)
+            recovered_slots_count += 1
+        if recovered_slots_count > 0:
+            slot_assignment_source = "recovered"
+
     observed_positions: list[dict[str, Any]] = []
     expected_by_slot = {(s.shelf_id, s.slot_index): s.sku_id for s in reference_slots}
     ideal_similarity_flags: list[dict[str, Any]] = []
@@ -1512,7 +1955,8 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
         if not box:
             continue
         crop = full_img.crop(box)
-        llm_hint = str(pos.get("lm_item_name", "")).strip()
+        # LM-имя: сначала из объединённого прогона шага 2, затем из inline поля позиции
+        llm_hint = lm_hint_by_index.get(idx, "") or str(pos.get("lm_item_name", "")).strip()
         expected_sku = expected_by_slot.get((shelf_id, position_in_shelf), "")
         ideal_similarity = score_crop_against_sku(crop, expected_sku, ref_embeddings) if expected_sku else 0.0
         is_similar_to_ideal = bool(expected_sku and ideal_similarity >= ideal_similarity_threshold)
@@ -1528,15 +1972,20 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
                     "reason": "low_ideal_similarity",
                 }
             )
-        m = match_sku_for_crop(
-            crop,
-            catalog_for_matching,
-            ref_embeddings,
-            confidence_threshold=confidence_threshold,
-            similar_groups=similar_groups,
-            llm_name_hint=llm_hint,
-            llm_name_weight=llm_name_weight,
-        )
+        # Основной путь: если LLM-имя есть — прямой name-маппинг (точнее гистограмм).
+        # Fallback: визуальный матчер для позиций без LLM-имени.
+        if llm_hint:
+            m = match_by_lm_name(llm_hint, catalog)
+        else:
+            m = match_sku_for_crop(
+                crop,
+                catalog_for_matching,
+                ref_embeddings,
+                confidence_threshold=confidence_threshold,
+                similar_groups=similar_groups,
+                llm_name_hint="",
+                llm_name_weight=llm_name_weight,
+            )
         observed_positions.append(
             {
                 "index": idx,
@@ -1582,6 +2031,27 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
         observed_positions,
         confidence_threshold=confidence_threshold,
     )
+    compliance_run_dir = _make_unique_run_dir("compliance", ref_base.name)
+    compliance_input = compliance_run_dir / "input.jpg"
+    full_img.save(str(compliance_input), format="JPEG", quality=92)
+    compliance_overlay = _draw_compliance_overlay(
+        image=full_img,
+        observed_positions=observed_positions,
+        deviations=metrics["deviations"],
+        ideal_similarity_flags=ideal_similarity_flags,
+        uncertainty_flags=uncertainty_flags,
+        matching_level=matching_level,
+    )
+    compliance_overlay.save(str(compliance_run_dir / "annotated_compliance.jpg"), format="JPEG", quality=92)
+    aligned_slot_rows = metrics.get("aligned_slot_rows", [])
+    shelf_compare_images = _build_shelf_comparison_visuals(
+        full_img=full_img,
+        aligned_slot_rows=aligned_slot_rows if isinstance(aligned_slot_rows, list) else [],
+        observed_positions=observed_positions,
+        catalog=catalog,
+        compliance_run_dir=compliance_run_dir,
+    )
+
     score = float(metrics["compliance_score"])
     result = {
         "ok": True,
@@ -1592,6 +2062,8 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
             "presence_ratio": metrics["presence_ratio"],
             "position_ratio": metrics["position_ratio"],
             "facings_ratio": metrics["facings_ratio"],
+            "slot_alignment_shift_by_shelf": metrics.get("slot_alignment_shift_by_shelf", {}),
+            "alignment_debug_by_shelf": metrics.get("alignment_debug_by_shelf", {}),
         },
         "deviations": metrics["deviations"],
         "foreign_brand_count": metrics.get("foreign_brand_count", 0),
@@ -1601,6 +2073,31 @@ async def check_planogram_compliance(request: Request) -> JSONResponse:
         "ideal_similarity_flags": ideal_similarity_flags,
         "uncertainty_flags": uncertainty_flags,
         "observed_positions": observed_positions,
+        "aligned_slot_rows": aligned_slot_rows,
+        "diagnostics": {
+            "slot_assignment_source": slot_assignment_source,
+            "recovered_slots_count": int(recovered_slots_count),
+            "total_slots_with_bbox": int(total_slots_with_bbox),
+            "missing_slots_before_recovery": int(len(missing_slot_indices)),
+            "observed_positions_with_valid_slot": int(
+                sum(
+                    1
+                    for p in observed_positions
+                    if int(p.get("shelf_id", 0) or 0) > 0 and int(p.get("position_in_shelf", 0) or 0) > 0
+                )
+            ),
+            "lm_names_loaded": int(lm_names_found),
+            "lm_run_dir": _lm_run_dir_found,
+            "lm_name_weight_used": float(lm_name_weight_effective),
+        },
+        "visual": {
+            "kind": "compliance",
+            "input_url": _file_url_under_sku_results("compliance", compliance_run_dir.name, "input.jpg"),
+            "annotated_url": _file_url_under_sku_results(
+                "compliance", compliance_run_dir.name, "annotated_compliance.jpg"
+            ),
+            "shelf_compare_images": shelf_compare_images,
+        },
     }
     logger.info(
         "POST /compliance/check ok score=%.2f status=%s за %.1f с deviations=%d",

@@ -212,17 +212,35 @@ def match_sku_for_crop(
         score = max(0.0, min(1.0, visual_conf * (1.0 - llm_name_weight) + text * llm_name_weight))
         candidates.append((item, visual, visual_conf, score))
     candidates.sort(key=lambda t: t[3], reverse=True)
-    best_item, best_visual, best_visual_conf, best_score = candidates[0]
-    second_score = candidates[1][3] if len(candidates) > 1 else 0.0
-    best_score = max(0.0, min(1.0, best_score + (best_score - second_score) * 0.2))
+    # ─── Агрегируем кандидатов по canonical name ────────────────────────────
+    # Среди candidates может быть несколько SKU с одним и тем же canonical_name
+    # (все они используют одно reference-изображение и имеют идентичные эмбеддинги).
+    # Сворачиваем в best_score PER NAME, сортируем по убыванию.
+    name_best: dict[str, tuple[SKUCatalogItem, float, float, float]] = {}
+    for cand_item, cand_vis, cand_vis_conf, cand_score in candidates:
+        n = normalize_name(cand_item.canonical_name)
+        if n not in name_best or cand_score > name_best[n][3]:
+            name_best[n] = (cand_item, cand_vis, cand_vis_conf, cand_score)
+    by_name_sorted = sorted(name_best.values(), key=lambda t: t[3], reverse=True)
+    best_item, best_visual, best_visual_conf, best_score = by_name_sorted[0]
+    second_distinct_score = by_name_sorted[1][3] if len(by_name_sorted) > 1 else 0.0
+    score_gap = max(0.0, float(best_score - second_distinct_score))
+
     is_hard_pair = False
     if similar_groups:
         for group in similar_groups:
             if best_item.sku_id in group:
                 is_hard_pair = True
                 break
-    threshold = min(0.99, confidence_threshold + (0.08 if is_hard_pair else 0.0))
-    accepted = best_score >= threshold
+    threshold = min(0.99, confidence_threshold + (0.05 if is_hard_pair else 0.0))
+    # Принимаем матч, если уверенность достаточна.
+    # min_visual снижается, если есть надёжный LLM-хинт (он гораздо точнее гистограмм).
+    if llm_name_hint and llm_name_weight >= 0.5:
+        # При высоком весе LLM-имени визуал вторичен; принимаем даже без ref-изображений.
+        min_visual = 0.0
+    else:
+        min_visual = 0.45
+    accepted = best_score >= threshold and best_visual >= min_visual
     return {
         "predicted_sku_id": best_item.sku_id if accepted else "unknown",
         "predicted_name": best_item.canonical_name if accepted else "unknown",
@@ -243,6 +261,71 @@ def match_sku_for_crop(
         ],
         "applied_threshold": float(threshold),
         "visual_confidence": float(best_visual_conf),
+        "score_gap": float(score_gap),
+    }
+
+
+def match_by_lm_name(
+    lm_name: str,
+    catalog: list[SKUCatalogItem],
+    *,
+    min_similarity: float = 0.25,
+) -> dict[str, Any]:
+    """
+    Прямой маппинг LLM-имени на SKU из каталога без визуального эмбеддинга.
+    Возвращает словарь совместимый с match_sku_for_crop.
+    """
+    unknown_result: dict[str, Any] = {
+        "predicted_sku_id": "unknown",
+        "predicted_name": "unknown",
+        "predicted_brand": "",
+        "confidence": 0.0,
+        "visual_score": 0.0,
+        "status": "unknown",
+        "top_k": [],
+        "score_gap": 0.0,
+        "applied_threshold": 0.0,
+        "visual_confidence": 0.0,
+    }
+    if not lm_name:
+        return unknown_result
+    name_lower = lm_name.strip().lower()
+    if name_lower in ("unknown", "неизвестный бренд", "неизвестно", ""):
+        return {**unknown_result, "status": "foreign"}
+
+    scored: list[tuple[float, SKUCatalogItem]] = []
+    for item in catalog:
+        sim = _name_similarity(lm_name, item)
+        scored.append((sim, item))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    best_sim, best_item = scored[0]
+    if best_sim < min_similarity:
+        return {**unknown_result, "status": "no_catalog_match"}
+
+    top_k = [
+        {
+            "sku_id": item.sku_id,
+            "canonical_name": item.canonical_name,
+            "brand": item.brand,
+            "confidence": float(sim),
+            "visual_score": 0.0,
+            "visual_confidence": 0.0,
+        }
+        for sim, item in scored[:3]
+    ]
+    second_sim = scored[1][0] if len(scored) > 1 else 0.0
+    return {
+        "predicted_sku_id": best_item.sku_id,
+        "predicted_name": best_item.canonical_name,
+        "predicted_brand": best_item.brand,
+        "confidence": float(best_sim),
+        "visual_score": 0.0,
+        "status": "ok",
+        "top_k": top_k,
+        "score_gap": float(best_sim - second_sim),
+        "applied_threshold": float(min_similarity),
+        "visual_confidence": 0.0,
     }
 
 
@@ -307,6 +390,100 @@ def compare_planograms_step3(
         if key[0] > 0 and key[1] > 0:
             observed_by_slot[key] = pos
 
+    sku_to_item = {item.sku_id: item for item in (catalog or [])}
+    sku_to_name = {item.sku_id: normalize_name(item.canonical_name) for item in (catalog or [])}
+
+    def _same_product(expected_sku_id: str, actual_sku_id: str) -> bool:
+        if not expected_sku_id or not actual_sku_id:
+            return False
+        if expected_sku_id == actual_sku_id:
+            return True
+        e_name = sku_to_name.get(expected_sku_id, "")
+        a_name = sku_to_name.get(actual_sku_id, "")
+        return bool(e_name and a_name and e_name == a_name)
+
+    expected_by_shelf: dict[int, list[PlanogramExpectedSlot]] = {}
+    for slot in reference_slots:
+        expected_by_shelf.setdefault(slot.shelf_id, []).append(slot)
+    observed_by_shelf: dict[int, list[dict[str, Any]]] = {}
+    for pos in observed_positions:
+        shelf_id = int(pos.get("shelf_id", 0) or 0)
+        if shelf_id <= 0:
+            continue
+        observed_by_shelf.setdefault(shelf_id, []).append(pos)
+    for shelf_id in expected_by_shelf:
+        expected_by_shelf[shelf_id].sort(key=lambda s: s.slot_index)
+    for shelf_id in observed_by_shelf:
+        observed_by_shelf[shelf_id].sort(key=lambda p: int(p.get("position_in_shelf", 0) or 0))
+
+    slot_alignment_shift_by_shelf: dict[int, int] = {}
+    alignment_debug_by_shelf: dict[int, dict[str, int]] = {}
+    aligned_observed_by_expected_slot: dict[tuple[int, int], dict[str, Any]] = {}
+    used_observed_slots: set[tuple[int, int]] = set()
+    # Активная зона нашей планограммы per shelf: (min_pos, max_pos) в observed-координатах.
+    # Позиции ВНЕ этой зоны — соседние товары, extra_sku для них не создаём.
+    planogram_zone_by_shelf: dict[int, tuple[int, int]] = {}
+
+    for shelf_id, expected_slots in expected_by_shelf.items():
+        observed_slots = observed_by_shelf.get(shelf_id, [])
+        if not expected_slots or not observed_slots:
+            slot_alignment_shift_by_shelf[shelf_id] = 0
+            continue
+        observed_index = {
+            int(p.get("position_in_shelf", 0) or 0): p
+            for p in observed_slots
+        }
+        max_exp = max(s.slot_index for s in expected_slots)
+        max_obs = max(observed_index.keys())
+        min_exp = min(s.slot_index for s in expected_slots)
+        min_obs = min(observed_index.keys())
+        # Полный диапазон сдвигов "до конца".
+        min_shift = min_obs - max_exp
+        max_shift = max_obs - min_exp
+        best_shift = 0
+        best_key: tuple[int, int, int] | None = None
+        for shift in range(min_shift, max_shift + 1):
+            match_count = 0
+            mismatch_count = 0
+            aligned_count = 0
+            for s in expected_slots:
+                obs = observed_index.get(s.slot_index + shift)
+                if not obs:
+                    continue
+                aligned_count += 1
+                pred = str(obs.get("predicted_sku_id", "unknown"))
+                if pred == "unknown":
+                    continue
+                if _same_product(s.sku_id, pred):
+                    match_count += 1
+                else:
+                    mismatch_count += 1
+            # Приоритет: 1) максимум покрытия (aligned), 2) совпадения продуктов,
+            # 3) shift ближе к 0.
+            match_score = match_count * 2 - mismatch_count
+            key = (aligned_count, match_score, -abs(shift))
+            if best_key is None or key > best_key:
+                best_key = key
+                best_shift = shift
+        slot_alignment_shift_by_shelf[shelf_id] = best_shift
+        if best_key is not None:
+            alignment_debug_by_shelf[shelf_id] = {
+                "selected_shift": int(best_shift),
+                "match_score": int(best_key[1]),
+                "aligned_count": int(best_key[0]),
+            }
+        # Активная зона планограммы на этой полке (в координатах observed)
+        planogram_zone_by_shelf[shelf_id] = (
+            min_exp + best_shift,
+            max_exp + best_shift,
+        )
+        for s in expected_slots:
+            observed = observed_index.get(s.slot_index + best_shift)
+            if observed is None:
+                continue
+            aligned_observed_by_expected_slot[(shelf_id, s.slot_index)] = observed
+            used_observed_slots.add((shelf_id, int(observed.get("position_in_shelf", 0) or 0)))
+
     matched_presence = 0
     matched_position = 0
     facings_score_sum = 0.0
@@ -314,24 +491,53 @@ def compare_planograms_step3(
     foreign_brand_count = 0
     info_only_deviation_count = 0
     deviations: list[dict[str, Any]] = []
-    sku_to_item = {item.sku_id: item for item in (catalog or [])}
+    aligned_slot_rows: list[dict[str, Any]] = []
 
     observed_slots_by_sku: dict[str, list[tuple[int, int]]] = {}
     for slot, item in observed_by_slot.items():
         sku_id = str(item.get("predicted_sku_id", "unknown"))
         observed_slots_by_sku.setdefault(sku_id, []).append(slot)
+    observed_slots_by_name: dict[str, list[tuple[int, int]]] = {}
+    for sku_id, slots in observed_slots_by_sku.items():
+        key = sku_to_name.get(sku_id, "")
+        if not key:
+            continue
+        observed_slots_by_name.setdefault(key, []).extend(slots)
 
     for slot_key, expected in expected_by_slot.items():
-        observed = observed_by_slot.get(slot_key)
+        observed = aligned_observed_by_expected_slot.get(slot_key)
+        shift_for_shelf = int(slot_alignment_shift_by_shelf.get(expected.shelf_id, 0))
+        aligned_observed_pos = int(expected.slot_index + shift_for_shelf)
         if observed is None:
+            aligned_slot_rows.append(
+                {
+                    "shelf_id": int(expected.shelf_id),
+                    "slot_index": int(expected.slot_index),
+                    "alignment_shift": shift_for_shelf,
+                    "aligned_observed_position_in_shelf": aligned_observed_pos,
+                    "expected_sku_id": str(expected.sku_id),
+                    "expected_name": str(sku_to_item.get(expected.sku_id).canonical_name) if sku_to_item.get(expected.sku_id) else "",
+                    "actual_sku_id": "",
+                    "actual_name": "",
+                    "expected_facings": int(expected.expected_facings),
+                    "actual_facings": 0,
+                    "observed_index": 0,
+                    "observed_bbox": None,
+                    "status": "empty",
+                    "match_ok": False,
+                }
+            )
             deviations.append(
                 {
                     "type": "missing_sku",
                     "sku_id": expected.sku_id,
                     "shelf_id": expected.shelf_id,
                     "slot_index": expected.slot_index,
+                    "aligned_observed_slot_index": aligned_observed_pos,
+                    "alignment_shift": shift_for_shelf,
                     "expected": {"sku_id": expected.sku_id, "facings": expected.expected_facings},
                     "actual": {"sku_id": "", "facings": 0},
+                    "visual_severity": "fail",
                     "reason": "SKU expected by planogram is absent at slot",
                 }
             )
@@ -339,8 +545,27 @@ def compare_planograms_step3(
 
         actual_sku = str(observed.get("predicted_sku_id", "unknown"))
         observed_facings = int(observed.get("observed_facings", 1) or 1)
+        match_ok = _same_product(expected.sku_id, actual_sku)
+        aligned_slot_rows.append(
+            {
+                "shelf_id": int(expected.shelf_id),
+                "slot_index": int(expected.slot_index),
+                "alignment_shift": shift_for_shelf,
+                "aligned_observed_position_in_shelf": int(observed.get("position_in_shelf", 0) or 0),
+                "expected_sku_id": str(expected.sku_id),
+                "expected_name": str(sku_to_item.get(expected.sku_id).canonical_name) if sku_to_item.get(expected.sku_id) else "",
+                "actual_sku_id": str(actual_sku),
+                "actual_name": str(sku_to_item.get(actual_sku).canonical_name) if sku_to_item.get(actual_sku) else "",
+                "expected_facings": int(expected.expected_facings),
+                "actual_facings": int(observed_facings),
+                "observed_index": int(observed.get("index", 0) or 0),
+                "observed_bbox": observed.get("bbox") if isinstance(observed.get("bbox"), dict) else None,
+                "status": "ok" if match_ok else "mismatch",
+                "match_ok": bool(match_ok),
+            }
+        )
 
-        if actual_sku == expected.sku_id:
+        if match_ok:
             matched_presence += 1
             matched_position += 1
             facings_ratio = min(observed_facings, expected.expected_facings) / max(
@@ -348,9 +573,9 @@ def compare_planograms_step3(
             )
             facings_score_sum += facings_ratio
         else:
-            found_elsewhere = slot_key not in observed_slots_by_sku.get(expected.sku_id, []) and bool(
-                observed_slots_by_sku.get(expected.sku_id)
-            )
+            expected_name_key = sku_to_name.get(expected.sku_id, "")
+            same_product_slots = observed_slots_by_name.get(expected_name_key, []) if expected_name_key else []
+            found_elsewhere = slot_key not in same_product_slots and bool(same_product_slots)
             expected_item = sku_to_item.get(expected.sku_id)
             actual_item = sku_to_item.get(actual_sku)
             expected_brand = expected_item.brand if expected_item else ""
@@ -380,36 +605,57 @@ def compare_planograms_step3(
                 matched_presence += 1
                 matched_position += 0.5
                 facings_score_sum += facings_ratio * 0.5
+            visual_severity = "fail"
+            if deviation_type in {"brand_substitute", "foreign_brand"} and foreign_sku_policy == "info_only":
+                visual_severity = "info"
+            elif deviation_type == "brand_substitute" and foreign_sku_policy == "soft_substitute":
+                visual_severity = "warn"
             deviations.append(
                 {
                     "type": deviation_type,
                     "sku_id": expected.sku_id,
                     "shelf_id": expected.shelf_id,
                     "slot_index": expected.slot_index,
+                    "aligned_observed_slot_index": int(observed.get("position_in_shelf", 0) or 0),
+                    "alignment_shift": int(slot_alignment_shift_by_shelf.get(expected.shelf_id, 0)),
                     "expected": {"sku_id": expected.sku_id, "facings": expected.expected_facings},
                     "actual": {"sku_id": actual_sku, "facings": observed_facings},
+                    "expected_canonical_name": sku_to_name.get(expected.sku_id, ""),
+                    "actual_canonical_name": sku_to_name.get(actual_sku, ""),
                     "expected_brand": expected_brand,
                     "actual_brand": actual_brand,
                     "brand_match": brand_match,
+                    "visual_severity": visual_severity,
                     "reason": deviation_reason,
                 }
             )
 
     for slot_key, observed in observed_by_slot.items():
-        if slot_key in expected_by_slot:
+        if slot_key in used_observed_slots:
             continue
+        shelf_id_ex = slot_key[0]
+        pos_in_shelf_ex = slot_key[1]
+        zone = planogram_zone_by_shelf.get(shelf_id_ex)
+        if zone is not None:
+            zone_min, zone_max = zone
+            if not (zone_min <= pos_in_shelf_ex <= zone_max):
+                # Позиция вне нашей зоны — соседний товар, игнорируем
+                continue
         deviations.append(
             {
                 "type": "extra_sku",
                 "sku_id": str(observed.get("predicted_sku_id", "unknown")),
-                "shelf_id": slot_key[0],
-                "slot_index": slot_key[1],
+                "shelf_id": shelf_id_ex,
+                "slot_index": pos_in_shelf_ex,
+                "aligned_observed_slot_index": pos_in_shelf_ex,
+                "alignment_shift": int(slot_alignment_shift_by_shelf.get(shelf_id_ex, 0)),
                 "expected": {"sku_id": "", "facings": 0},
                 "actual": {
                     "sku_id": str(observed.get("predicted_sku_id", "unknown")),
                     "facings": int(observed.get("observed_facings", 1) or 1),
                 },
-                "reason": "Observed SKU does not exist in reference planogram slot set",
+                "visual_severity": "fail",
+                "reason": "Observed SKU inside planogram zone but not expected at this slot",
             }
         )
 
@@ -432,6 +678,12 @@ def compare_planograms_step3(
         "brand_substitute_count": int(brand_substitute_count),
         "foreign_brand_count": int(foreign_brand_count),
         "info_only_deviation_count": int(info_only_deviation_count),
+        "slot_alignment_shift_by_shelf": {str(k): int(v) for k, v in slot_alignment_shift_by_shelf.items()},
+        "alignment_debug_by_shelf": {str(k): v for k, v in alignment_debug_by_shelf.items()},
+        "planogram_zone_by_shelf": {
+            str(k): {"min_pos": v[0], "max_pos": v[1]} for k, v in planogram_zone_by_shelf.items()
+        },
+        "aligned_slot_rows": aligned_slot_rows,
     }
 
 
